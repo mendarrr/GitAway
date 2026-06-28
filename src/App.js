@@ -1347,7 +1347,7 @@ export default function App() {
       <div style={{ width: sidebarOpen ? 220 : 56, flexShrink: 0, background: C.surface, borderRight: `1px solid ${C.border}`, transition: 'width .2s', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <div style={{ padding: '16px 12px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 20, flexShrink: 0 }}>🗺️</span>
-          {sidebarOpen && <span style={{ fontFamily: 'Space Grotesk', fontWeight: 700, fontSize: 14, whiteSpace: 'nowrap' }}>JKUAT Tracker</span>}
+          {sidebarOpen && <span style={{ fontFamily: 'Space Grotesk', fontWeight: 700, fontSize: 14, whiteSpace: 'nowrap' }}>Abby's Tracker</span>}
           <button onClick={() => setSidebarOpen(o => !o)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: C.muted, fontSize: 18, cursor: 'pointer', flexShrink: 0 }}>{sidebarOpen ? '◂' : '▸'}</button>
         </div>
         <nav style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
