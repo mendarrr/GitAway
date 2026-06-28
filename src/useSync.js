@@ -1,17 +1,12 @@
 // ─── useSync.js ──────────────────────────────────────────────────────────────
-//
-//  Uses signInWithRedirect instead of signInWithPopup to avoid
-//  Cross-Origin-Opener-Policy issues on Netlify and other strict hosts.
-//
-// ─────────────────────────────────────────────────────────────────────────────
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { doc, setDoc, onSnapshot } from 'firebase/firestore';
 import {
   onAuthStateChanged,
-  signInWithRedirect,
-  getRedirectResult,
+  signInWithPopup,
   signOut as fbSignOut,
+  browserPopupRedirectResolver,
 } from 'firebase/auth';
 import { db, auth, googleProvider } from './firebase';
 
@@ -25,11 +20,11 @@ function saveLocal(data) {
 }
 
 export function useSync() {
-  const [user, setUser]             = useState(null);
+  const [user, setUser]               = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [syncStatus, setSyncStatus]   = useState('offline');
+  const signingIn                     = useRef(false); // prevents double-calls
 
-  // 1. Listen for auth state changes
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u);
@@ -38,22 +33,23 @@ export function useSync() {
     return unsub;
   }, []);
 
-  // 2. On mount, check if we're returning from a redirect sign-in
-  useEffect(() => {
-    getRedirectResult(auth)
-      .then((result) => {
-        if (result?.user) {
-          setUser(result.user); // user is now signed in
-        }
-      })
-      .catch((e) => {
-        console.error('Redirect result error:', e);
-      });
-  }, []);
-
-  // 3. Sign in — redirects the page to Google, then comes back
-  const signIn = useCallback(() => {
-    signInWithRedirect(auth, googleProvider);
+  const signIn = useCallback(async () => {
+    if (signingIn.current) return;
+    signingIn.current = true;
+    try {
+      // browserPopupRedirectResolver is explicitly passed so Firebase uses
+      // its own iframe relay instead of window.closed polling — this is what
+      // avoids the COOP error without needing a full-page redirect.
+      await signInWithPopup(auth, googleProvider, browserPopupRedirectResolver);
+    } catch (e) {
+      // auth/cancelled-popup-request and auth/popup-closed-by-user are normal
+      // (user closed the popup) — don't log those as errors
+      if (!['auth/cancelled-popup-request', 'auth/popup-closed-by-user'].includes(e.code)) {
+        console.error('Sign in error:', e);
+      }
+    } finally {
+      signingIn.current = false;
+    }
   }, []);
 
   const signOut = useCallback(async () => {
@@ -61,7 +57,6 @@ export function useSync() {
     setSyncStatus('offline');
   }, []);
 
-  // 4. Save to Firestore
   const saveToCloud = useCallback(async (data) => {
     saveLocal(data);
     if (!auth.currentUser) return;
@@ -76,7 +71,6 @@ export function useSync() {
     }
   }, []);
 
-  // 5. Real-time listener
   const subscribeToCloud = useCallback((onData) => {
     if (!auth.currentUser) return () => {};
     const ref = doc(db, 'users', auth.currentUser.uid, 'data', 'state');
@@ -95,5 +89,5 @@ export function useSync() {
     return unsub;
   }, []);
 
-  return { user, authLoading, syncStatus, signIn, signOut, saveToCloud, subscribeToCloud };
+  return { user, authLoading, syncStatus, signIn, signOut, saveToCloud, subscribeToCloud, loadLocal };
 }
