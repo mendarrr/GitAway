@@ -248,6 +248,7 @@ function reducer(state, action) {
       return state;
     }
 
+    case 'loadState': return { ...action.state, _ts: Date.now() };
     default: return state;
   }
   save(next);
@@ -1420,6 +1421,14 @@ export default function App() {
 
   // wire saveToCloud so the reducer's save() calls go to Firestore
   useEffect(() => { _saveToCloud = saveToCloud; }, [saveToCloud]);
+
+  useEffect(() => {
+  if (!user) return;
+  const unsub = subscribeToCloud((cloudData) => {
+    dispatch({ type: 'loadState', state: cloudData });
+  });
+  return unsub;
+}, [user, subscribeToCloud]);
 
   if (authLoading) {
     return (
