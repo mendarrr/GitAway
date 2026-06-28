@@ -47,3 +47,5 @@ coverage/
 .parcel-cache/
 
 .qodo/
+# Local Netlify folder
+.netlify
