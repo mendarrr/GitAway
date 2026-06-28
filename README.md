@@ -33,7 +33,7 @@ sudo apt-get install -y nodejs
 
 ```bash
 # 1. Navigate to the project folder
-cd holiday-roadmap
+cd GitAway
 
 # 2. Install dependencies (first time only)
 npm install
@@ -54,7 +54,7 @@ This creates a `build/` folder you can deploy to Netlify, GitHub Pages, or any s
 ## Project Structure
 
 ```
-holiday-roadmap/
+GitAway/
 ├── public/
 │   └── index.html
 ├── src/
