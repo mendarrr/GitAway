@@ -1,6 +1,6 @@
 # 🗺️ Holiday Skills Roadmap App
 
-A personal learning tracker for your 8-week holiday — built for your Data Science, Web Dev, and internship goals.
+A personal learning tracker 
 
 ## Features
 - ✅ **Task tracker** with checkboxes across all 45 tasks (8 weeks × 4 tracks)
