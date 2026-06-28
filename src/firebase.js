@@ -22,12 +22,12 @@ import { getAuth, GoogleAuthProvider } from 'firebase/auth';
 
 // ── PASTE YOUR CONFIG HERE ───────────────────────────────────────────────────
 const firebaseConfig = {
-  apiKey: "AIzaSyAFwCQyfrFRLLavkEuhiabY5O1GcShxpTA",
-  authDomain: "gitaway-4ccc8.firebaseapp.com",
-  projectId: "gitaway-4ccc8",
-  storageBucket: "gitaway-4ccc8.firebasestorage.app",
-  messagingSenderId: "594218408170",
-  appId: "1:594218408170:web:5096c67af4119bc7845f93"
+  apiKey:            process.env.REACT_APP_API_KEY,
+  authDomain:        process.env.REACT_APP_AUTH_DOMAIN,
+  projectId:         process.env.REACT_APP_PROJECT_ID,
+  storageBucket:     process.env.REACT_APP_STORAGE_BUCKET,
+  messagingSenderId: process.env.REACT_APP_MESSAGING_SENDER_ID,
+  appId:             process.env.REACT_APP_APP_ID,
 };
 // ─────────────────────────────────────────────────────────────────────────────
 
