@@ -1470,4 +1470,5 @@ export default function App() {
       <AppInner />
     </div>
   );
+  console.log('Firebase project:', process.env.REACT_APP_PROJECT_ID);
 }

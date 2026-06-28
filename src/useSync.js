@@ -1,9 +1,7 @@
 // ─── useSync.js ──────────────────────────────────────────────────────────────
 //
-//  Drop-in replacement for localStorage that syncs to Firestore in real-time.
-//  Your existing reducer still calls save(state) — this file intercepts that
-//  and pushes to the cloud instead. On load it pulls from the cloud first,
-//  falling back to localStorage if offline.
+//  Uses signInWithRedirect instead of signInWithPopup to avoid
+//  Cross-Origin-Opener-Policy issues on Netlify and other strict hosts.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -11,14 +9,14 @@ import { useEffect, useState, useCallback } from 'react';
 import { doc, setDoc, onSnapshot } from 'firebase/firestore';
 import {
   onAuthStateChanged,
-  signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signOut as fbSignOut,
 } from 'firebase/auth';
 import { db, auth, googleProvider } from './firebase';
 
 const LOCAL_KEY = 'roadmap_v3';
 
-// ── helpers ──────────────────────────────────────────────────────────────────
 function loadLocal() {
   try { return JSON.parse(localStorage.getItem(LOCAL_KEY)) || null; } catch { return null; }
 }
@@ -26,13 +24,12 @@ function saveLocal(data) {
   try { localStorage.setItem(LOCAL_KEY, JSON.stringify(data)); } catch {}
 }
 
-// ── main hook ─────────────────────────────────────────────────────────────────
 export function useSync() {
-  const [user, setUser]           = useState(null);   // Firebase user
+  const [user, setUser]             = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [syncStatus, setSyncStatus]   = useState('offline'); // 'offline'|'syncing'|'synced'|'error'
+  const [syncStatus, setSyncStatus]   = useState('offline');
 
-  // listen for auth state
+  // 1. Listen for auth state changes
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u);
@@ -41,10 +38,22 @@ export function useSync() {
     return unsub;
   }, []);
 
-  // sign in / out
-  const signIn = useCallback(async () => {
-    try { await signInWithPopup(auth, googleProvider); }
-    catch (e) { console.error('Sign in error:', e); }
+  // 2. On mount, check if we're returning from a redirect sign-in
+  useEffect(() => {
+    getRedirectResult(auth)
+      .then((result) => {
+        if (result?.user) {
+          setUser(result.user); // user is now signed in
+        }
+      })
+      .catch((e) => {
+        console.error('Redirect result error:', e);
+      });
+  }, []);
+
+  // 3. Sign in — redirects the page to Google, then comes back
+  const signIn = useCallback(() => {
+    signInWithRedirect(auth, googleProvider);
   }, []);
 
   const signOut = useCallback(async () => {
@@ -52,9 +61,9 @@ export function useSync() {
     setSyncStatus('offline');
   }, []);
 
-  // save to Firestore (called by the reducer instead of localStorage)
+  // 4. Save to Firestore
   const saveToCloud = useCallback(async (data) => {
-    saveLocal(data); // always save locally too (offline support)
+    saveLocal(data);
     if (!auth.currentUser) return;
     try {
       setSyncStatus('syncing');
@@ -67,8 +76,7 @@ export function useSync() {
     }
   }, []);
 
-  // subscribe to real-time updates from Firestore
-  // returns a function to call with a setter so the app can update state live
+  // 5. Real-time listener
   const subscribeToCloud = useCallback((onData) => {
     if (!auth.currentUser) return () => {};
     const ref = doc(db, 'users', auth.currentUser.uid, 'data', 'state');
@@ -76,7 +84,7 @@ export function useSync() {
       if (snap.exists()) {
         try {
           const data = JSON.parse(snap.data().payload);
-          saveLocal(data); // keep local in sync
+          saveLocal(data);
           onData(data);
         } catch {}
       }
