@@ -1,11 +1,15 @@
 import React, { useState, useEffect, useCallback, useRef, useReducer } from 'react';
 import { TASKS, TRACKS, RESOURCES, ACHIEVEMENTS, XP_RULES, MASTERY_LEVELS, DAYS, TIMES } from './data';
+import { useSync } from './useSync';
 
 // ─── storage ───────────────────────────────────────────────────────────────
 const KEY = 'roadmap_v3';
 const today = () => new Date().toISOString().slice(0, 10);
 function load() { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch { return {}; } }
-function save(d) { localStorage.setItem(KEY, JSON.stringify(d)); }
+// _saveToCloud is replaced by the useSync hook once App mounts.
+// Until then it falls back to localStorage so the app works offline too.
+let _saveToCloud = (d) => { try { localStorage.setItem(KEY, JSON.stringify(d)); } catch {} };
+function save(d) { _saveToCloud(d); }
 
 function initState() {
   const s = load();
@@ -234,6 +238,16 @@ function reducer(state, action) {
     case 'aiMessage': next = { ...state, aiHistory: [...state.aiHistory, action.msg].slice(-60), aiQuestions: state.aiQuestions + (action.msg.role === 'user' ? 1 : 0) }; break;
     case 'clearAI': next = { ...state, aiHistory: [] }; break;
 
+    // real-time cloud hydration — only update if cloud state has more progress
+    case '_hydrate': {
+      const cloud = action.data;
+      // prefer whichever has more XP (more progress) to avoid overwriting local work
+      if ((cloud.xp || 0) >= (state.xp || 0)) {
+        return cloud; // don't call save() — this data came FROM the cloud
+      }
+      return state;
+    }
+
     default: return state;
   }
   save(next);
@@ -311,7 +325,7 @@ function Dashboard({ state }) {
 
       {/* holiday progress */}
       <Card>
-        <div style={{ fontWeight: 600, marginBottom: 10 }}>🗺️ Holiday roadmap progress</div>
+        <div style={{ fontWeight: 600, marginBottom: 10 }}>🗺️ GitAway Roadmap progress</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12 }}>
           {TRACKS.map(tr => {
             const all = TASKS.filter(t => t.track === tr.id);
@@ -1305,7 +1319,7 @@ const TABS = [
   { id: 'achieve',    label: '🏆 Achievements',     group: 'general' },
 ];
 
-export default function App() {
+function AppInner() {
   const [tab, setTab] = useState('dashboard');
   const [state, dispatch] = useReducer(reducer, null, initState);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -1392,6 +1406,68 @@ export default function App() {
           {tab === 'achieve'    && <AchievementsTab state={state} />}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── SYNC PATCH (appended) ───────────────────────────────────────────────────
+// Re-export App with Firebase sync wired in.
+// The original export default function App() above remains intact as AppInner.
+
+// ─── Synced App wrapper ───────────────────────────────────────────────────────
+export default function App() {
+  const { user, authLoading, syncStatus, signIn, signOut, saveToCloud, subscribeToCloud } = useSync();
+
+  // wire saveToCloud so the reducer's save() calls go to Firestore
+  useEffect(() => { _saveToCloud = saveToCloud; }, [saveToCloud]);
+
+  if (authLoading) {
+    return (
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100vh', background:'#0d1117', flexDirection:'column', gap:16 }}>
+        <div style={{ fontSize:32 }}>🗺️</div>
+        <div style={{ color:'#7d8590', fontSize:14 }}>Loading your tracker…</div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100vh', background:'#0d1117', flexDirection:'column', gap:20 }}>
+        <div style={{ fontSize:48 }}>🗺️</div>
+        <div style={{ fontFamily:'Space Grotesk', fontWeight:700, fontSize:24, color:'#e6edf3' }}>My GitAway Diary</div>
+        <div style={{ color:'#7d8590', fontSize:14, maxWidth:320, textAlign:'center', lineHeight:1.6 }}>
+          Sign in with Google to sync your progress across your phone, laptop, and any other device instantly.
+        </div>
+        <button onClick={signIn} style={{
+          display:'flex', alignItems:'center', gap:12, padding:'12px 28px',
+          background:'#fff', color:'#1a1a1a', border:'none', borderRadius:8,
+          fontSize:15, fontWeight:600, cursor:'pointer', fontFamily:'inherit',
+          boxShadow:'0 2px 12px rgba(0,0,0,.4)'
+        }}>
+          <svg width="20" height="20" viewBox="0 0 48 48"><path fill="#4285F4" d="M44.5 20H24v8.5h11.7C34.5 33.4 30 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.1 8.1 2.9l6.4-6.4C34.5 5.1 29.5 3 24 3 12.4 3 3 12.4 3 24s9.4 21 21 21c11 0 20-8 20-21 0-1.3-.2-2.7-.5-4z"/><path fill="#34A853" d="M6.3 14.7l7 5.1C15 16.5 19.2 13.5 24 13.5c3.1 0 5.9 1.1 8.1 2.9l6.4-6.4C34.5 6.1 29.5 4 24 4c-7.2 0-13.4 3.9-16.7 9.7z"/><path fill="#FBBC05" d="M24 45c5.3 0 10.2-1.8 14-4.9l-6.5-5.3C29.5 36.5 27 37.5 24 37.5c-5.9 0-10.9-3.9-12.7-9.3l-7 5.4C7.8 41.1 15.3 45 24 45z"/><path fill="#EA4335" d="M44.5 20H24v8.5h11.7c-.8 2.4-2.3 4.4-4.2 5.8l6.5 5.3C42 35.7 45 30.3 45 24c0-1.3-.2-2.7-.5-4z"/></svg>
+          Continue with Google
+        </button>
+        <div style={{ color:'#7d8590', fontSize:12 }}>Your data is private and only visible to you.</div>
+      </div>
+    );
+  }
+
+  // Sync indicator bar (top of page when signed in)
+  const syncColors = { syncing:'#d29922', synced:'#3fb950', error:'#f85149', offline:'#7d8590' };
+  const syncLabels = { syncing:'Syncing…', synced:'Synced ✓', error:'Sync error', offline:'Local only' };
+
+  return (
+    <div style={{ position:'relative' }}>
+      {/* thin sync bar at very top */}
+      <div style={{ position:'fixed', top:0, left:0, right:0, zIndex:2000, height:2, background: syncStatus==='synced'?'#3fb950': syncStatus==='syncing'?'#d29922':'#f85149', transition:'background .4s' }} />
+      {/* user chip */}
+      <div style={{ position:'fixed', top:6, right:12, zIndex:2001, display:'flex', alignItems:'center', gap:8, background:'rgba(22,27,34,.95)', border:'1px solid #30363d', borderRadius:20, padding:'4px 10px 4px 6px', fontSize:12 }}>
+        {user.photoURL && <img src={user.photoURL} alt="" style={{ width:20, height:20, borderRadius:'50%' }} />}
+        <span style={{ color:'#7d8590' }}>{user.displayName?.split(' ')[0]}</span>
+        <span style={{ color:syncColors[syncStatus], fontSize:11 }}>· {syncLabels[syncStatus]}</span>
+        <button onClick={signOut} style={{ background:'none', border:'none', color:'#7d8590', fontSize:11, cursor:'pointer', marginLeft:4 }}>Sign out</button>
+      </div>
+      <AppInner />
     </div>
   );
 }

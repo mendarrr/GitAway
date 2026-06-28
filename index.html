@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GitAway</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-logo">📚 Roadmap Diary</div>
+      <div class="sidebar-sub">GitAway Study tracker</div>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-label">Main</div>
+      <button class="nav-item active" onclick="nav('dashboard')"><span class="nav-icon">🏠</span>Dashboard</button>
+      <button class="nav-item" onclick="nav('tasks')"><span class="nav-icon">✅</span>Daily tasks</button>
+      <button class="nav-item" onclick="nav('calendar')"><span class="nav-icon">📅</span>Calendar</button>
+      <button class="nav-item" onclick="nav('timer')"><span class="nav-icon">⏱</span>Focus timer</button>
+      <div class="nav-label">My progress</div>
+      <button class="nav-item" onclick="nav('tracks')"><span class="nav-icon">📊</span>Skill tracks</button>
+      <button class="nav-item" onclick="nav('diary')"><span class="nav-icon">📝</span>Diary / notes</button>
+      <button class="nav-item" onclick="nav('achievements')"><span class="nav-icon">🏆</span>Achievements</button>
+      <div class="nav-label">Tools</div>
+      <button class="nav-item" onclick="nav('reminders')"><span class="nav-icon">🔔</span>Reminders</button>
+      <button class="nav-item" onclick="nav('resources')"><span class="nav-icon">🔗</span>Resources</button>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="streak-box">
+        <div class="streak-num" id="streakNum">0</div>
+        <div class="streak-lbl">day streak 🔥</div>
+      </div>
+      <div class="last-active" id="lastActive">Start your first session!</div>
+    </div>
+  </aside>
+
+  <!-- Main content -->
+  <main class="main">
+    <div class="topbar">
+      <div class="page-title" id="pageTitle">Dashboard</div>
+      <div class="topbar-right">
+        <span class="today-date" id="todayDate"></span>
+        <button class="btn btn-sm btn-accent" onclick="nav('tasks')">+ Add task</button>
+      </div>
+    </div>
+
+    <div class="content">
+
+      <!-- DASHBOARD -->
+      <div id="sec-dashboard" class="section active">
+        <div class="stat-grid">
+          <div class="stat-card"><div class="stat-num accent" id="st-tasks">0</div><div class="stat-lbl">Tasks done today</div></div>
+          <div class="stat-card"><div class="stat-num green" id="st-hrs">0h</div><div class="stat-lbl">Focus time today</div></div>
+          <div class="stat-card"><div class="stat-num amber" id="st-xp">0</div><div class="stat-lbl">XP earned total</div></div>
+          <div class="stat-card"><div class="stat-num purple" id="st-week">W1</div><div class="stat-lbl">Current week</div></div>
+        </div>
+
+        <div class="card">
+          <div class="xp-row">
+            <div class="xp-level" id="xpLevel">Level 1 — Beginner</div>
+            <div class="xp-pts"><span id="xpCurrent">0</span> / <span id="xpNext">200</span> XP</div>
+          </div>
+          <div class="progress-bar-track"><div class="progress-bar-fill amber-fill" id="xpBar" style="width:0%"></div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">📅 Activity heatmap</div>
+          <div class="heatmap" id="heatmap"></div>
+          <div class="heatmap-legend">
+            <span>Less</span>
+            <div class="heat-cell"></div>
+            <div class="heat-cell l1"></div>
+            <div class="heat-cell l2"></div>
+            <div class="heat-cell l4"></div>
+            <span>More</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">✅ Today's tasks <span class="card-sub" id="todayCount"></span></div>
+          <div id="todayTaskList"></div>
+          <button class="btn btn-sm" style="margin-top:10px" onclick="nav('tasks')">View all tasks →</button>
+        </div>
+
+        <div class="track-grid" id="dashTracks"></div>
+      </div>
+
+      <!-- TASKS -->
+      <div id="sec-tasks" class="section">
+        <div class="add-form">
+          <div class="form-title">Add a task</div>
+          <div class="form-row">
+            <input class="input input-grow" id="taskInput" placeholder="Task description..." onkeydown="if(event.key==='Enter')addTask()">
+            <select class="input" id="taskTrack">
+              <option value="data">📊 Data &amp; BI</option>
+              <option value="web">💻 Web dev</option>
+              <option value="soft">🧠 Soft skills</option>
+              <option value="intern">💼 Internship</option>
+            </select>
+            <select class="input" id="taskWeek">
+              <option value="1">Week 1</option><option value="2">Week 2</option><option value="3">Week 3</option>
+              <option value="4">Week 4</option><option value="5">Week 5</option><option value="6">Week 6</option>
+              <option value="7">Week 7</option><option value="8">Week 8</option>
+            </select>
+            <input class="input xp-input" type="number" id="taskXP" placeholder="XP" value="10" min="1" max="100">
+            <button class="btn btn-accent" onclick="addTask()">Add</button>
+          </div>
+        </div>
+        <div class="week-tabs" id="weekTabs"></div>
+        <div class="card"><div id="taskList"></div></div>
+      </div>
+
+      <!-- CALENDAR -->
+      <div id="sec-calendar" class="section">
+        <div class="cal-layout">
+          <div class="card">
+            <div class="cal-nav">
+              <button class="btn btn-ghost" onclick="calPrev()">← Prev</button>
+              <div class="cal-month" id="calMonth"></div>
+              <button class="btn btn-ghost" onclick="calNext()">Next →</button>
+            </div>
+            <div class="cal-header" id="calDOW"></div>
+            <div class="cal-grid" id="calGrid"></div>
+          </div>
+          <div>
+            <div class="card">
+              <div class="card-title" id="calSelectedTitle">Select a day</div>
+              <div id="calDayDetail" class="cal-detail-empty">Click a day to see tasks and notes.</div>
+            </div>
+            <div class="card">
+              <div class="card-title">Add to day</div>
+              <div class="cal-add-form">
+                <input class="input" id="calEventInput" placeholder="Add note or event for selected day...">
+                <input class="input" type="date" id="calEventDate">
+                <button class="btn btn-accent btn-sm" onclick="addCalEvent()">Save</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TIMER -->
+      <div id="sec-timer" class="section">
+        <div class="timer-wrap">
+          <div class="card">
+            <div class="timer-mode">
+              <button class="mode-btn active" onclick="setMode(25,'Work session',this)">Work 25</button>
+              <button class="mode-btn" onclick="setMode(5,'Short break',this)">Break 5</button>
+              <button class="mode-btn" onclick="setMode(15,'Long break',this)">Break 15</button>
+              <button class="mode-btn" onclick="setMode(50,'Deep work',this)">Deep 50</button>
+            </div>
+            <div class="timer-label" id="timerLabel">Work session</div>
+            <div class="timer-display" id="timerDisplay">25:00</div>
+            <div style="margin-bottom:12px">
+              <select class="input" id="timerTrack" style="width:100%">
+                <option value="data">📊 Data &amp; BI</option>
+                <option value="web">💻 Web dev</option>
+                <option value="soft">🧠 Soft skills</option>
+                <option value="intern">💼 Internship</option>
+              </select>
+            </div>
+            <div class="timer-controls">
+              <button class="btn btn-accent" onclick="timerToggle()" id="timerBtn">▶ Start</button>
+              <button class="btn" onclick="timerReset()">↺ Reset</button>
+            </div>
+            <div class="sess-count" id="sessCount">Sessions today: 0</div>
+          </div>
+          <div class="card">
+            <div class="card-title">Session log</div>
+            <div class="session-log" id="sessionLog"><div class="empty-text">No sessions yet today</div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TRACKS -->
+      <div id="sec-tracks" class="section">
+        <div id="trackDetail"></div>
+      </div>
+
+      <!-- DIARY -->
+      <div id="sec-diary" class="section">
+        <div class="add-form">
+          <div class="form-title">New diary entry</div>
+          <div class="form-row">
+            <input class="input input-grow" id="diaryTitle" placeholder="Entry title (e.g. Week 2 Day 3 reflection)">
+            <input class="input" type="date" id="diaryDate">
+            <button class="btn btn-accent" onclick="addDiary()">Save entry</button>
+          </div>
+          <textarea class="input textarea" id="diaryBody" placeholder="What did you learn today? What was hard? What will you do differently? How do your OneNote mind maps connect to this?"></textarea>
+        </div>
+        <div id="diaryList"></div>
+      </div>
+
+      <!-- ACHIEVEMENTS -->
+      <div id="sec-achievements" class="section">
+        <div class="card">
+          <div class="card-title">🏆 Badges &amp; milestones</div>
+          <div class="badge-grid" id="badgeGrid"></div>
+        </div>
+        <div class="card" style="margin-top:12px">
+          <div class="card-title">📈 XP history</div>
+          <div id="xpHistory" class="empty-text">Complete tasks to start earning XP!</div>
+        </div>
+      </div>
+
+      <!-- REMINDERS -->
+      <div id="sec-reminders" class="section">
+        <div class="add-form">
+          <div class="form-title">Add reminder</div>
+          <div class="form-row">
+            <input class="input input-grow" id="remText" placeholder="Reminder text...">
+            <input class="input" type="datetime-local" id="remTime">
+            <select class="input" id="remType">
+              <option value="study">📚 Study</option>
+              <option value="apply">💼 Apply</option>
+              <option value="break">☕ Break</option>
+              <option value="review">🔁 Review</option>
+            </select>
+            <button class="btn btn-accent" onclick="addReminder()">Add</button>
+          </div>
+        </div>
+        <div id="reminderList"></div>
+      </div>
+
+      <!-- RESOURCES -->
+      <div id="sec-resources" class="section">
+        <div id="resourcesList"></div>
+      </div>
+
+    </div>
+  </main>
+</div>
+
+<div class="notif" id="notif"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
