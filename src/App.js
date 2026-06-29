@@ -1,20 +1,40 @@
 import React, { useState, useEffect, useCallback, useRef, useReducer } from 'react';
-import { TASKS, TRACKS, RESOURCES, ACHIEVEMENTS, XP_RULES, MASTERY_LEVELS, DAYS, TIMES } from './data';
+import { TASKS, TRACKS, RESOURCES, ACHIEVEMENTS, XP_RULES, MASTERY_LEVELS, DAYS, TIMES,
+         SKILL_ROADMAPS, semLabel, makeSemId, parseSemId } from './data';
 import { useSync } from './useSync';
 
 // ─── storage ───────────────────────────────────────────────────────────────
 const KEY = 'roadmap_v3';
 const today = () => new Date().toISOString().slice(0, 10);
 function load() { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch { return {}; } }
-// _saveToCloud is replaced by the useSync hook once App mounts.
-// Until then it falls back to localStorage so the app works offline too.
 let _saveToCloud = (d) => { try { localStorage.setItem(KEY, JSON.stringify(d)); } catch {} };
 function save(d) { _saveToCloud(d); }
+
+const DEFAULT_PREFS = {
+  displayName: '',
+  bio: '',
+  avatarEmoji: '🎓',
+  theme: 'dark',       // 'dark' | 'light' | 'midnight'
+  accentColor: '#58a6ff',
+  font: 'system',      // 'system' | 'mono' | 'rounded'
+  fontSize: 14,
+  sidebarCompact: false,
+  timerWork: 90,
+  timerShort: 25,
+  timerLong: 50,
+  timerDeep: 180,
+  chosenSkills: [],    // array of SKILL_ROADMAP ids
+  customResources: [], // [{id, category, name, url}]
+  hiddenDefaultResources: [], // ["{category}::{name}"]
+  semesters: [{ id: '3.1', year: 3, sem: 1, label: 'Year 3 · Sem 1', status: 'active' },
+              { id: '3.2', year: 3, sem: 2, label: 'Year 3 · Sem 2', status: 'upcoming' },
+              { id: '4.1', year: 4, sem: 1, label: 'Year 4 · Sem 1', status: 'upcoming' },
+              { id: '4.2', year: 4, sem: 2, label: 'Year 4 · Sem 2', status: 'upcoming' }],
+};
 
 function initState() {
   const s = load();
   return {
-    // holiday
     checked: s.checked || {},
     diary: s.diary || {},
     calNotes: s.calNotes || {},
@@ -24,27 +44,57 @@ function initState() {
     lastVisit: s.lastVisit || '',
     xp: s.xp || 0,
     xpLog: s.xpLog || [],
-    // semester
-    units: s.units || [],          // [{id,code,name,color,topics:[],assignments:[],cats:[],exams:[]}]
-    timetable: s.timetable || [],  // [{id,day,time,unitId,type,notes}]
-    aiHistory: s.aiHistory || [],  // [{role,content}]
+    units: s.units || [],
+    timetable: s.timetable || [],
+    aiHistory: s.aiHistory || [],
     aiQuestions: s.aiQuestions || 0,
+    prefs: { ...DEFAULT_PREFS, ...(s.prefs || {}) },
+    completedSemesters: s.completedSemesters || [],
+    completedYears: s.completedYears || [],
+    diaryCount: s.diaryCount || 0,
   };
 }
 
-// ─── shared ui ─────────────────────────────────────────────────────────────
-const C = {
-  surface: 'var(--surface)',
-  surface2: 'var(--surface2)',
-  border: 'var(--border)',
-  text: 'var(--text)',
-  muted: 'var(--muted)',
-  accent: 'var(--accent)',
-  green: 'var(--green)',
-  amber: 'var(--amber)',
-  red: 'var(--red)',
-  purple: 'var(--purple)',
+// ─── THEME PALETTES ─────────────────────────────────────────────────────────
+const THEMES = {
+  dark: {
+    bg: '#0d1117', surface: '#161b22', surface2: '#21262d', border: '#30363d',
+    text: '#e6edf3', muted: '#7d8590',
+  },
+  light: {
+    bg: '#f6f8fa', surface: '#ffffff', surface2: '#f0f2f5', border: '#d0d7de',
+    text: '#1f2328', muted: '#656d76',
+  },
+  midnight: {
+    bg: '#070d1a', surface: '#0e1629', surface2: '#162038', border: '#1e3050',
+    text: '#cdd6f4', muted: '#6c7086',
+  },
 };
+
+const FONTS = {
+  system: `-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`,
+  mono: `'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace`,
+  rounded: `'Nunito', 'Varela Round', 'Quicksand', sans-serif`,
+};
+
+// ─── shared ui ─────────────────────────────────────────────────────────────
+let C = {
+  bg: '#0d1117', surface: '#161b22', surface2: '#21262d', border: '#30363d',
+  text: '#e6edf3', muted: '#7d8590',
+  accent: '#58a6ff', green: '#3fb950', amber: '#d29922', red: '#f85149', purple: '#bc8cff',
+};
+
+function applyTheme(prefs) {
+  const t = THEMES[prefs.theme] || THEMES.dark;
+  C = { ...t, accent: prefs.accentColor || '#58a6ff', green: '#3fb950', amber: '#d29922', red: '#f85149', purple: '#bc8cff' };
+  const root = document.documentElement;
+  Object.entries(C).forEach(([k, v]) => root.style.setProperty(`--${k}`, v));
+  root.style.setProperty('--font', FONTS[prefs.font] || FONTS.system);
+  root.style.setProperty('--fs', `${prefs.fontSize || 14}px`);
+  document.body.style.background = C.bg;
+  document.body.style.color = C.text;
+  document.body.style.fontFamily = FONTS[prefs.font] || FONTS.system;
+}
 
 function Card({ children, style }) {
   return <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 18, ...style }}>{children}</div>;
@@ -68,16 +118,16 @@ function Btn({ children, onClick, color = C.accent, outline = false, style = {},
 }
 function Input({ value, onChange, placeholder, style = {}, type = 'text', min, max }) {
   return <input type={type} min={min} max={max} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
-    style={{ background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: '8px 10px', fontSize: 13, width: '100%', fontFamily: 'inherit', ...style }} />;
+    style={{ background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: '8px 10px', fontSize: 13, width: '100%', fontFamily: 'inherit', boxSizing: 'border-box', ...style }} />;
 }
 function Select({ value, onChange, children, style = {} }) {
   return <select value={value} onChange={e => onChange(e.target.value)}
     style={{ background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: '8px 10px', fontSize: 13, fontFamily: 'inherit', ...style }}>{children}</select>;
 }
-function Modal({ title, onClose, children }) {
-  return <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+function Modal({ title, onClose, children, wide = false }) {
+  return <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}
     onClick={e => e.target === e.currentTarget && onClose()}>
-    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 24, width: 480, maxHeight: '85vh', overflowY: 'auto' }}>
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 24, width: wide ? 700 : 480, maxWidth: '95vw', maxHeight: '85vh', overflowY: 'auto' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
         <span style={{ fontWeight: 700, fontSize: 16 }}>{title}</span>
         <button onClick={onClose} style={{ background: 'none', border: 'none', color: C.muted, fontSize: 20, cursor: 'pointer' }}>✕</button>
@@ -86,12 +136,14 @@ function Modal({ title, onClose, children }) {
     </div>
   </div>;
 }
+function SectionLabel({ children }) {
+  return <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, letterSpacing: '.08em', textTransform: 'uppercase', marginBottom: 8 }}>{children}</div>;
+}
 
-const trackColor = (id) => TRACKS.find(t => t.id === id)?.color || C.accent;
 const UNIT_COLORS = ['#58a6ff','#3fb950','#bc8cff','#d29922','#f85149','#ff9500','#ff6ac1','#00d4aa','#e6c07b','#56d364','#ffa198','#c9d1d9','#f0883e','#a5f3fc','#d946ef','#84cc16','#fb923c','#a78bfa','#34d399','#ff7b72'];
 const uid = () => Math.random().toString(36).slice(2, 9);
 
-// ─── XP logic (auto) ───────────────────────────────────────────────────────
+// ─── XP logic ───────────────────────────────────────────────────────────────
 function awardXP(state, amount, reason) {
   const entry = { amount, reason, date: today() };
   return { ...state, xp: state.xp + amount, xpLog: [entry, ...(state.xpLog || [])].slice(0, 200) };
@@ -101,8 +153,6 @@ function awardXP(state, amount, reason) {
 function reducer(state, action) {
   let next = state;
   switch (action.type) {
-
-    // holiday tasks — XP auto from task
     case 'toggle': {
       const was = !!state.checked[action.id];
       const delta = was ? -action.xp : action.xp;
@@ -110,25 +160,28 @@ function reducer(state, action) {
       if (!was) next = { ...next, xpLog: [{ amount: action.xp, reason: `Task: ${action.title}`, date: today() }, ...(next.xpLog || [])].slice(0, 200) };
       break;
     }
-    case 'diary': next = awardXP({ ...state, diary: { ...state.diary, [action.date]: action.text } }, XP_RULES.diary_entry, 'Diary entry'); break;
+    case 'diary':
+      next = awardXP(
+        { ...state, diary: { ...state.diary, [action.date]: action.text }, diaryCount: (state.diaryCount || 0) + 1 },
+        XP_RULES.diary_entry, 'Diary entry'
+      );
+      break;
     case 'calNote': next = { ...state, calNotes: { ...state.calNotes, [action.date]: action.text } }; break;
     case 'focusDone':
-      next = awardXP({ ...state, focusSessions: [...state.focusSessions, { date: today(), minutes: action.minutes, mode: action.mode }] }, XP_RULES.focus_session, `Focus session – ${action.mode}`);
+      next = awardXP({ ...state, focusSessions: [...state.focusSessions, { date: today(), minutes: action.minutes, mode: action.mode }] }, XP_RULES.focus_session, `Focus – ${action.mode}`);
       break;
     case 'addReminder': next = { ...state, reminders: [...state.reminders, action.reminder] }; break;
     case 'removeReminder': next = { ...state, reminders: state.reminders.filter(r => r.id !== action.id) }; break;
 
-    // ── semester: units ──
+    // ── units ──
     case 'addUnit': next = { ...state, units: [...state.units, action.unit] }; break;
     case 'removeUnit': next = { ...state, units: state.units.filter(u => u.id !== action.id) }; break;
     case 'updateUnit': next = { ...state, units: state.units.map(u => u.id === action.unit.id ? action.unit : u) }; break;
 
-    // ── semester: assignments ──
+    // ── assignments ──
     case 'addAssignment': {
-      const units = state.units.map(u => u.id === action.unitId
-        ? { ...u, assignments: [...(u.assignments || []), action.item] } : u);
-      next = { ...state, units };
-      break;
+      const units = state.units.map(u => u.id === action.unitId ? { ...u, assignments: [...(u.assignments || []), action.item] } : u);
+      next = { ...state, units }; break;
     }
     case 'updateAssignment': {
       let xpGain = 0; let reason = '';
@@ -136,15 +189,12 @@ function reducer(state, action) {
         if (u.id !== action.unitId) return u;
         const assignments = (u.assignments || []).map(a => {
           if (a.id !== action.item.id) return a;
-          // auto XP on submission
           if (!a.submitted && action.item.submitted) { xpGain += XP_RULES.assignment_submit; reason = `Submitted: ${a.title}`; }
-          // auto XP on grading
           if (!a.grade && action.item.grade) {
-            const g = parseFloat(action.item.grade);
-            const pct = g / (action.item.outOf || 100) * 100;
-            if (pct >= 70) { xpGain += XP_RULES.assignment_grade_A; reason += ` | Grade A (${g})`; }
-            else if (pct >= 60) { xpGain += XP_RULES.assignment_grade_B; reason += ` | Grade B`; }
-            else { xpGain += XP_RULES.assignment_grade_C; reason += ` | Grade C`; }
+            const pct = parseFloat(action.item.grade) / (action.item.outOf || 100) * 100;
+            if (pct >= 70) { xpGain += XP_RULES.assignment_grade_A; reason += ` Grade A`; }
+            else if (pct >= 60) { xpGain += XP_RULES.assignment_grade_B; reason += ` Grade B`; }
+            else { xpGain += XP_RULES.assignment_grade_C; reason += ` Grade C`; }
           }
           return action.item;
         });
@@ -153,13 +203,9 @@ function reducer(state, action) {
       next = xpGain > 0 ? awardXP({ ...state, units }, xpGain, reason) : { ...state, units };
       break;
     }
-
-    // ── semester: CATs ──
     case 'addCat': {
-      const units = state.units.map(u => u.id === action.unitId
-        ? { ...u, cats: [...(u.cats || []), action.item] } : u);
-      next = { ...state, units };
-      break;
+      const units = state.units.map(u => u.id === action.unitId ? { ...u, cats: [...(u.cats || []), action.item] } : u);
+      next = { ...state, units }; break;
     }
     case 'updateCat': {
       let xpGain = 0; let reason = '';
@@ -169,8 +215,8 @@ function reducer(state, action) {
           if (c.id !== action.item.id) return c;
           if (!c.score && action.item.score) {
             const pct = parseFloat(action.item.score) / (action.item.outOf || 30) * 100;
-            if (pct >= 70) { xpGain += XP_RULES.cat_distinction; reason = `CAT distinction: ${c.title}`; }
-            else if (pct >= 50) { xpGain += XP_RULES.cat_pass; reason = `CAT pass: ${c.title}`; }
+            if (pct >= 70) { xpGain += XP_RULES.cat_distinction; reason = `CAT distinction`; }
+            else if (pct >= 50) { xpGain += XP_RULES.cat_pass; reason = `CAT pass`; }
           }
           return action.item;
         });
@@ -179,13 +225,9 @@ function reducer(state, action) {
       next = xpGain > 0 ? awardXP({ ...state, units }, xpGain, reason) : { ...state, units };
       break;
     }
-
-    // ── semester: exams ──
     case 'addExam': {
-      const units = state.units.map(u => u.id === action.unitId
-        ? { ...u, exams: [...(u.exams || []), action.item] } : u);
-      next = { ...state, units };
-      break;
+      const units = state.units.map(u => u.id === action.unitId ? { ...u, exams: [...(u.exams || []), action.item] } : u);
+      next = { ...state, units }; break;
     }
     case 'updateExam': {
       let xpGain = 0; let reason = '';
@@ -195,8 +237,8 @@ function reducer(state, action) {
           if (e.id !== action.item.id) return e;
           if (!e.score && action.item.score) {
             const pct = parseFloat(action.item.score) / (action.item.outOf || 70) * 100;
-            if (pct >= 70) { xpGain += XP_RULES.exam_distinction; reason = `Exam distinction: ${e.title}`; }
-            else if (pct >= 40) { xpGain += XP_RULES.exam_pass; reason = `Exam pass: ${e.title}`; }
+            if (pct >= 70) { xpGain += XP_RULES.exam_distinction; reason = `Exam distinction`; }
+            else if (pct >= 40) { xpGain += XP_RULES.exam_pass; reason = `Exam pass`; }
           }
           return action.item;
         });
@@ -205,49 +247,58 @@ function reducer(state, action) {
       next = xpGain > 0 ? awardXP({ ...state, units }, xpGain, reason) : { ...state, units };
       break;
     }
-
-    // ── semester: topics (mastery) ──
     case 'setMastery': {
       const units = state.units.map(u => {
         if (u.id !== action.unitId) return u;
         const topics = (u.topics || []).map(t => t.id === action.topicId ? { ...t, mastery: action.level } : t);
         return { ...u, topics };
       });
-      // award XP when reaching level 4
       next = action.level === 4 ? awardXP({ ...state, units }, XP_RULES.topic_mastered, `Topic mastered`) : { ...state, units };
       break;
     }
     case 'addTopic': {
-      const units = state.units.map(u => u.id === action.unitId
-        ? { ...u, topics: [...(u.topics || []), action.topic] } : u);
-      next = { ...state, units };
-      break;
+      const units = state.units.map(u => u.id === action.unitId ? { ...u, topics: [...(u.topics || []), action.topic] } : u);
+      next = { ...state, units }; break;
     }
     case 'removeTopic': {
-      const units = state.units.map(u => u.id !== action.unitId ? u
-        : { ...u, topics: (u.topics || []).filter(t => t.id !== action.topicId) });
-      next = { ...state, units };
-      break;
+      const units = state.units.map(u => u.id !== action.unitId ? u : { ...u, topics: (u.topics || []).filter(t => t.id !== action.topicId) });
+      next = { ...state, units }; break;
     }
-
-    // ── timetable ──
     case 'addSlot': next = { ...state, timetable: [...state.timetable, action.slot] }; break;
     case 'removeSlot': next = { ...state, timetable: state.timetable.filter(s => s.id !== action.id) }; break;
-
-    // ── AI ──
     case 'aiMessage': next = { ...state, aiHistory: [...state.aiHistory, action.msg].slice(-60), aiQuestions: state.aiQuestions + (action.msg.role === 'user' ? 1 : 0) }; break;
     case 'clearAI': next = { ...state, aiHistory: [] }; break;
 
-    // real-time cloud hydration — only update if cloud state has more progress
-    case '_hydrate': {
-      const cloud = action.data;
-      // prefer whichever has more XP (more progress) to avoid overwriting local work
-      if ((cloud.xp || 0) >= (state.xp || 0)) {
-        return cloud; // don't call save() — this data came FROM the cloud
+    // ── prefs ──
+    case 'setPrefs': next = { ...state, prefs: { ...state.prefs, ...action.prefs } }; break;
+
+    // ── semester completion ──
+    case 'completeSemester': {
+      const { semId, clean } = action;
+      const already = state.completedSemesters.includes(semId);
+      if (already) { next = state; break; }
+      const completedSemesters = [...state.completedSemesters, semId];
+      let s2 = awardXP({ ...state, completedSemesters }, XP_RULES.semester_complete, `Semester complete: ${semId}`);
+      if (clean) s2 = { ...s2, /* cleanSemester flag for achievements */ _lastCleanSem: semId };
+      // check if year complete: both sems of same year done
+      const { year } = parseSemId(semId);
+      const yearDone = [1, 2].every(s => completedSemesters.includes(makeSemId(year, s)));
+      if (yearDone && !state.completedYears.includes(year)) {
+        s2 = awardXP({ ...s2, completedYears: [...(s2.completedYears || []), year] }, XP_RULES.year_complete, `Year ${year} complete!`);
       }
-      return state;
+      next = s2;
+      break;
+    }
+    case 'uncompleteSemester': {
+      next = { ...state, completedSemesters: state.completedSemesters.filter(s => s !== action.semId) };
+      break;
     }
 
+    case '_hydrate': {
+      const cloud = action.data;
+      if ((cloud.xp || 0) >= (state.xp || 0)) return cloud;
+      return state;
+    }
     case 'loadState': return { ...action.state, _ts: Date.now() };
     default: return state;
   }
@@ -256,34 +307,510 @@ function reducer(state, action) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// SETTINGS & PROFILE TAB
+// ══════════════════════════════════════════════════════════════════════════════
+const AVATAR_EMOJIS = ['🎓','👨‍💻','👩‍💻','🧑‍🔬','🦁','🐉','🚀','⚡','🔥','🌟','💎','🎯','🏆','🦊','🐺','🎮','🤖','👾','🌈','🦋'];
+const ACCENT_COLORS = ['#58a6ff','#3fb950','#bc8cff','#d29922','#f85149','#ff9500','#ff6ac1','#00d4aa','#ff7b72','#ffa198','#56d364','#e8b86d'];
+
+function SettingsTab({ state, dispatch }) {
+  const prefs = state.prefs || DEFAULT_PREFS;
+  const [activeSection, setActiveSection] = useState('profile');
+  const [semForm, setSemForm] = useState({ year: '', sem: '' });
+  const [resForm, setResForm] = useState({ category: '', name: '', url: '' });
+
+  const set = (key, val) => dispatch({ type: 'setPrefs', prefs: { [key]: val } });
+  const setMany = (obj) => dispatch({ type: 'setPrefs', prefs: obj });
+
+  const semesters = prefs.semesters || DEFAULT_PREFS.semesters;
+
+  const addSemester = () => {
+    const y = parseInt(semForm.year), s = parseInt(semForm.sem);
+    if (!y || !s || s < 1 || s > 2) return;
+    const id = makeSemId(y, s);
+    if (semesters.find(x => x.id === id)) return;
+    const newSems = [...semesters, { id, year: y, sem: s, label: `Year ${y} · Sem ${s}`, status: 'upcoming' }]
+      .sort((a, b) => a.year !== b.year ? a.year - b.year : a.sem - b.sem);
+    set('semesters', newSems);
+    setSemForm({ year: '', sem: '' });
+  };
+
+  const removeSemester = (id) => {
+    set('semesters', semesters.filter(s => s.id !== id));
+  };
+
+  const addResource = () => {
+    if (!resForm.category || !resForm.name || !resForm.url) return;
+    const customResources = [...(prefs.customResources || []), { id: uid(), ...resForm }];
+    set('customResources', customResources);
+    setResForm({ category: '', name: '', url: '' });
+  };
+
+  const removeCustomResource = (id) => {
+    set('customResources', (prefs.customResources || []).filter(r => r.id !== id));
+  };
+
+  const toggleDefaultResource = (key) => {
+    const hidden = prefs.hiddenDefaultResources || [];
+    const next = hidden.includes(key) ? hidden.filter(h => h !== key) : [...hidden, key];
+    set('hiddenDefaultResources', next);
+  };
+
+  const toggleSkill = (skillId) => {
+    const chosen = prefs.chosenSkills || [];
+    const next = chosen.includes(skillId) ? chosen.filter(s => s !== skillId) : [...chosen, skillId];
+    set('chosenSkills', next);
+  };
+
+  const sections = [
+    { id: 'profile', label: '👤 Profile' },
+    { id: 'appearance', label: '🎨 Appearance' },
+    { id: 'timer', label: '⏱ Timer' },
+    { id: 'skills', label: '🗺️ Skills Roadmap' },
+    { id: 'resources', label: '📚 Resources' },
+    { id: 'semesters', label: '🎓 Semesters' },
+  ];
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '180px 1fr', gap: 20 }}>
+      {/* sidebar nav */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {sections.map(s => (
+          <button key={s.id} onClick={() => setActiveSection(s.id)} style={{
+            background: activeSection === s.id ? C.accent + '22' : 'none',
+            color: activeSection === s.id ? C.accent : C.muted,
+            border: `1px solid ${activeSection === s.id ? C.accent + '44' : 'transparent'}`,
+            borderRadius: 7, padding: '8px 12px', textAlign: 'left', fontSize: 13,
+            fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+          }}>{s.label}</button>
+        ))}
+      </div>
+
+      {/* content */}
+      <div>
+        {/* ── PROFILE ── */}
+        {activeSection === 'profile' && (
+          <Card>
+            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 18 }}>Profile</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div>
+                <SectionLabel>Avatar</SectionLabel>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {AVATAR_EMOJIS.map(e => (
+                    <button key={e} onClick={() => set('avatarEmoji', e)} style={{
+                      fontSize: 24, background: prefs.avatarEmoji === e ? C.accent + '33' : C.surface2,
+                      border: `2px solid ${prefs.avatarEmoji === e ? C.accent : C.border}`,
+                      borderRadius: 10, width: 44, height: 44, cursor: 'pointer',
+                    }}>{e}</button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <SectionLabel>Display Name</SectionLabel>
+                <Input value={prefs.displayName || ''} onChange={v => set('displayName', v)} placeholder="Your name" />
+              </div>
+              <div>
+                <SectionLabel>Bio / Tagline</SectionLabel>
+                <Input value={prefs.bio || ''} onChange={v => set('bio', v)} placeholder="e.g. Data Science student @ JKUAT" />
+              </div>
+            </div>
+          </Card>
+        )}
+
+        {/* ── APPEARANCE ── */}
+        {activeSection === 'appearance' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <Card>
+              <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 18 }}>Appearance</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <div>
+                  <SectionLabel>Theme</SectionLabel>
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    {[['dark','🌙 Dark'],['light','☀️ Light'],['midnight','🌌 Midnight']].map(([id, label]) => (
+                      <button key={id} onClick={() => set('theme', id)} style={{
+                        padding: '8px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                        background: prefs.theme === id ? C.accent : C.surface2,
+                        color: prefs.theme === id ? '#000' : C.text,
+                        border: `1px solid ${prefs.theme === id ? C.accent : C.border}`,
+                        fontFamily: 'inherit',
+                      }}>{label}</button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <SectionLabel>Accent Colour</SectionLabel>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {ACCENT_COLORS.map(col => (
+                      <div key={col} onClick={() => set('accentColor', col)} style={{
+                        width: 32, height: 32, borderRadius: '50%', background: col, cursor: 'pointer',
+                        border: prefs.accentColor === col ? '3px solid white' : '2px solid transparent',
+                        boxShadow: prefs.accentColor === col ? '0 0 0 2px ' + col : 'none',
+                      }} />
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <SectionLabel>Font Family</SectionLabel>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    {[['system','System'],['mono','Monospace'],['rounded','Rounded']].map(([id, label]) => (
+                      <button key={id} onClick={() => set('font', id)} style={{
+                        padding: '8px 14px', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                        fontFamily: FONTS[id], background: prefs.font === id ? C.accent : C.surface2,
+                        color: prefs.font === id ? '#000' : C.text,
+                        border: `1px solid ${prefs.font === id ? C.accent : C.border}`,
+                      }}>{label}</button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <SectionLabel>Font Size: {prefs.fontSize || 14}px</SectionLabel>
+                  <input type="range" min={12} max={18} value={prefs.fontSize || 14}
+                    onChange={e => set('fontSize', parseInt(e.target.value))}
+                    style={{ width: 200, accentColor: C.accent }} />
+                </div>
+              </div>
+            </Card>
+          </div>
+        )}
+
+        {/* ── TIMER ── */}
+        {activeSection === 'timer' && (
+          <Card>
+            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 18 }}>Focus Timer Durations</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              {[
+                ['timerWork',  '🍅 Focus (mins)'],
+                ['timerShort', '☕ Short Break'],
+                ['timerLong',  '🌿 Long Break'],
+                ['timerDeep',  '🧠 Deep Work'],
+              ].map(([key, label]) => (
+                <div key={key}>
+                  <SectionLabel>{label}</SectionLabel>
+                  <input type="number" min={1} max={240} value={prefs[key] || DEFAULT_PREFS[key]}
+                    onChange={e => set(key, parseInt(e.target.value) || 1)}
+                    style={{ background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: '8px 10px', fontSize: 14, width: 100, fontFamily: 'inherit' }} />
+                  <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>minutes</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ marginTop: 16, fontSize: 12, color: C.muted }}>Changes take effect when you next open the Focus Timer.</div>
+          </Card>
+        )}
+
+        {/* ── SKILLS ROADMAP ── */}
+        {activeSection === 'skills' && (
+          <div>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 6 }}>Learning Roadmaps</div>
+              <div style={{ fontSize: 13, color: C.muted }}>Pick the skills you want to learn. Their resources will appear in the Resources tab. Inspired by <a href="https://roadmap.sh" target="_blank" rel="noreferrer" style={{ color: C.accent }}>roadmap.sh</a>.</div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(240px,1fr))', gap: 10 }}>
+              {SKILL_ROADMAPS.map(skill => {
+                const chosen = (prefs.chosenSkills || []).includes(skill.id);
+                return (
+                  <div key={skill.id} onClick={() => toggleSkill(skill.id)} style={{
+                    background: chosen ? skill.color + '18' : C.surface2,
+                    border: `2px solid ${chosen ? skill.color : C.border}`,
+                    borderRadius: 10, padding: '12px 14px', cursor: 'pointer', transition: 'all .15s',
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <span style={{ fontSize: 22 }}>{skill.emoji}</span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: 700, fontSize: 13, color: chosen ? skill.color : C.text }}>{skill.label}</div>
+                        <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{skill.description}</div>
+                      </div>
+                      {chosen && <span style={{ color: skill.color, fontSize: 16 }}>✓</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {(prefs.chosenSkills || []).length > 0 && (
+              <div style={{ marginTop: 12, fontSize: 12, color: C.green }}>
+                ✓ {(prefs.chosenSkills || []).length} roadmap{(prefs.chosenSkills || []).length !== 1 ? 's' : ''} selected — resources visible in the Resources tab.
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── RESOURCES ── */}
+        {activeSection === 'resources' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <Card>
+              <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Add Custom Resource</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  <Input value={resForm.category} onChange={v => setResForm(f => ({ ...f, category: v }))} placeholder="Category e.g. My Tools" />
+                  <Input value={resForm.name} onChange={v => setResForm(f => ({ ...f, name: v }))} placeholder="Resource name" />
+                </div>
+                <Input value={resForm.url} onChange={v => setResForm(f => ({ ...f, url: v }))} placeholder="https://example.com" />
+                <Btn onClick={addResource} disabled={!resForm.category || !resForm.name || !resForm.url}>+ Add Resource</Btn>
+              </div>
+            </Card>
+            {(prefs.customResources || []).length > 0 && (
+              <Card>
+                <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>My Custom Resources</div>
+                {(prefs.customResources || []).map(r => (
+                  <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: `1px solid ${C.border}` }}>
+                    <div style={{ flex: 1 }}>
+                      <span style={{ fontSize: 12, color: C.accent, marginRight: 8 }}>[{r.category}]</span>
+                      <a href={r.url} target="_blank" rel="noreferrer" style={{ color: C.text, fontSize: 13 }}>{r.name}</a>
+                    </div>
+                    <button onClick={() => removeCustomResource(r.id)} style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 14 }}>✕</button>
+                  </div>
+                ))}
+              </Card>
+            )}
+            <Card>
+              <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Show/Hide Default Resources</div>
+              <div style={{ fontSize: 12, color: C.muted, marginBottom: 12 }}>Toggle off resources you don't need to keep things clean.</div>
+              {RESOURCES.map(cat => (
+                <div key={cat.category} style={{ marginBottom: 14 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, color: C.accent, marginBottom: 6 }}>{cat.category}</div>
+                  {cat.items.map(item => {
+                    const key = `${cat.category}::${item.name}`;
+                    const hidden = (prefs.hiddenDefaultResources || []).includes(key);
+                    return (
+                      <div key={item.name} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '5px 0' }}>
+                        <input type="checkbox" checked={!hidden} onChange={() => toggleDefaultResource(key)}
+                          style={{ accentColor: C.accent, width: 14, height: 14 }} />
+                        <a href={item.url} target="_blank" rel="noreferrer"
+                          style={{ fontSize: 13, color: hidden ? C.muted : C.text, textDecoration: hidden ? 'line-through' : 'none' }}>{item.name}</a>
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </Card>
+          </div>
+        )}
+
+        {/* ── SEMESTERS ── */}
+        {activeSection === 'semesters' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <Card>
+              <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Your Semesters</div>
+              <div style={{ fontSize: 13, color: C.muted, marginBottom: 12 }}>Add any year/semester combination. You can then mark them complete in the Semester Units tab.</div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginBottom: 16, flexWrap: 'wrap' }}>
+                <div>
+                  <SectionLabel>Year</SectionLabel>
+                  <input type="number" min={1} max={9} value={semForm.year}
+                    onChange={e => setSemForm(f => ({ ...f, year: e.target.value }))}
+                    placeholder="e.g. 3" style={{ background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: '8px 10px', fontSize: 13, width: 80, fontFamily: 'inherit' }} />
+                </div>
+                <div>
+                  <SectionLabel>Semester</SectionLabel>
+                  <select value={semForm.sem} onChange={e => setSemForm(f => ({ ...f, sem: e.target.value }))}
+                    style={{ background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: '8px 10px', fontSize: 13, fontFamily: 'inherit' }}>
+                    <option value="">--</option>
+                    <option value="1">Sem 1</option>
+                    <option value="2">Sem 2</option>
+                  </select>
+                </div>
+                <Btn onClick={addSemester} disabled={!semForm.year || !semForm.sem}>+ Add Semester</Btn>
+              </div>
+              <div>
+                {semesters.map(sem => {
+                  const done = (state.completedSemesters || []).includes(sem.id);
+                  return (
+                    <div key={sem.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: `1px solid ${C.border}` }}>
+                      <span style={{ fontSize: 14 }}>{done ? '✅' : '🔵'}</span>
+                      <div style={{ flex: 1, fontWeight: 600, fontSize: 13 }}>{sem.label || semLabel(sem.id)}</div>
+                      {done && <Badge label="Completed" color={C.green} />}
+                      <button onClick={() => removeSemester(sem.id)} style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 14 }}>✕</button>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// RESOURCES TAB (personalised)
+// ══════════════════════════════════════════════════════════════════════════════
+function ResourcesTab({ prefs }) {
+  const chosen = prefs?.chosenSkills || [];
+  const hidden = prefs?.hiddenDefaultResources || [];
+  const custom = prefs?.customResources || [];
+
+  // Build unified resource list
+  const sections = [];
+
+  // 1) Default resources (filtered by hidden)
+  RESOURCES.forEach(cat => {
+    const visible = cat.items.filter(item => !hidden.includes(`${cat.category}::${item.name}`));
+    if (visible.length) sections.push({ category: cat.category, items: visible, isSkill: false });
+  });
+
+  // 2) Chosen skill roadmap resources
+  chosen.forEach(skillId => {
+    const skill = SKILL_ROADMAPS.find(s => s.id === skillId);
+    if (skill) sections.push({ category: `${skill.emoji} ${skill.label}`, items: skill.resources, color: skill.color, isSkill: true });
+  });
+
+  // 3) Custom resources grouped by category
+  const customCats = {};
+  custom.forEach(r => { if (!customCats[r.category]) customCats[r.category] = []; customCats[r.category].push(r); });
+  Object.entries(customCats).forEach(([cat, items]) => sections.push({ category: `⭐ ${cat}`, items, isCustom: true }));
+
+  return (
+    <div>
+      {chosen.length === 0 && custom.length === 0 && (
+        <div style={{ background: C.accent + '15', border: `1px solid ${C.accent}33`, borderRadius: 10, padding: '12px 16px', marginBottom: 16, fontSize: 13 }}>
+          💡 Go to <strong>Settings → Skills Roadmap</strong> to add roadmap resources, or <strong>Settings → Resources</strong> to add your own links.
+        </div>
+      )}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(280px,1fr))', gap: 16 }}>
+        {sections.map(cat => (
+          <Card key={cat.category} style={{ borderLeft: cat.color ? `3px solid ${cat.color}` : undefined }}>
+            <div style={{ fontWeight: 700, marginBottom: 12, color: cat.color || C.accent, fontSize: 13 }}>{cat.category}</div>
+            {cat.items.map(item => (
+              <a key={item.name} href={item.url} target="_blank" rel="noopener noreferrer"
+                style={{ display: 'flex', alignItems: 'center', gap: 6, color: C.text, textDecoration: 'none', fontSize: 13, padding: '6px 0', borderBottom: `1px solid ${C.border}` }}
+                onMouseEnter={e => { e.currentTarget.style.color = C.accent; }}
+                onMouseLeave={e => { e.currentTarget.style.color = C.text; }}>
+                <span style={{ color: C.muted, fontSize: 11 }}>↗</span> {item.name}
+              </a>
+            ))}
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ACHIEVEMENTS TAB (with semester/year achievements)
+// ══════════════════════════════════════════════════════════════════════════════
+function AchievementsTab({ state }) {
+  const doneTasks = Object.values(state.checked).filter(Boolean).length;
+  const dataDone = TASKS.filter(t => t.track === 'data' && state.checked[t.id]).length;
+  const webDone = TASKS.filter(t => t.track === 'web' && state.checked[t.id]).length;
+  const softDone = TASKS.filter(t => t.track === 'soft' && state.checked[t.id]).length;
+  const internDone = TASKS.filter(t => t.track === 'intern' && state.checked[t.id]).length;
+  const week1Done = TASKS.filter(t => t.week === 1).every(t => state.checked[t.id]);
+  const capstone = !!state.checked['t31'];
+  const allCats = state.units.flatMap(u => u.cats || []);
+  const catsPassed = allCats.filter(c => c.score && parseFloat(c.score) / (c.outOf || 30) * 100 >= 60).length;
+  const allExams = state.units.flatMap(u => u.exams || []);
+  const examsPassed = allExams.filter(e => e.score && parseFloat(e.score) / (e.outOf || 70) * 100 >= 40).length;
+  const allScores = [
+    ...state.units.flatMap(u => (u.assignments || []).map(a => a.grade ? parseFloat(a.grade) / (a.outOf || 100) * 100 : 0)),
+    ...allCats.map(c => c.score ? parseFloat(c.score) / (c.outOf || 30) * 100 : 0),
+  ];
+  const topScore = allScores.some(s => s >= 80);
+  const assignmentsSubmitted = state.units.flatMap(u => u.assignments || []).filter(a => a.submitted).length;
+  const perfectUnit = state.units.some(u => {
+    const topics = u.topics || [];
+    return topics.length > 0 && topics.every(t => t.mastery === 4);
+  });
+  // Check for clean semester (all assignments submitted, all cats+exams passed)
+  const cleanSemester = (state.completedSemesters || []).length > 0 || !!state._lastCleanSem;
+  const yearComplete = (state.completedYears || []).length > 0;
+  const skillsChosen = (state.prefs?.chosenSkills || []).length;
+
+  const d = {
+    done: doneTasks, xp: state.xp, dataDone, webDone, softDone, internDone,
+    week1Done, capstone, streak: state.streak, units: state.units.length,
+    catsPassed, topScore, totalSessions: state.focusSessions.length,
+    aiQuestions: state.aiQuestions || 0, examsPassed, assignmentsSubmitted,
+    perfectUnit, cleanSemester, yearComplete, skillsChosen,
+    diaryEntries: state.diaryCount || 0,
+    completedSemestersCount: (state.completedSemesters || []).length,
+  };
+
+  const unlocked = ACHIEVEMENTS.filter(a => a.condition(d)).length;
+
+  const groups = [
+    { label: '🏖️ Holiday Tasks', ids: ['a1','a2','a3','a4','a5','a11','a12','a8','a10'] },
+    { label: '⭐ XP', ids: ['a6','a7','a17','a19'] },
+    { label: '🎓 Academic', ids: ['a13','a14','a15','a16','a22','a23','a24'] },
+    { label: '📅 Semester & Year', ids: ['a20','a21'] },
+    { label: '🔥 Consistency', ids: ['a9','a25','a26'] },
+    { label: '🗺️ Skills & AI', ids: ['a27','a28','a18'] },
+  ];
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 20 }}>
+        <div>
+          <div style={{ fontFamily: 'Space Grotesk', fontWeight: 700, fontSize: 24, color: C.amber }}>{unlocked}<span style={{ fontSize: 14, color: C.muted }}>/{ACHIEVEMENTS.length}</span></div>
+          <div style={{ fontSize: 12, color: C.muted }}>Achievements unlocked</div>
+        </div>
+        <div style={{ flex: 1 }}>
+          <ProgressBar value={unlocked} max={ACHIEVEMENTS.length} color={C.amber} height={8} />
+        </div>
+      </div>
+      {groups.map(g => {
+        const achInGroup = ACHIEVEMENTS.filter(a => g.ids.includes(a.id));
+        return (
+          <div key={g.label} style={{ marginBottom: 24 }}>
+            <div style={{ fontWeight: 700, fontSize: 13, color: C.muted, marginBottom: 10 }}>{g.label}</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(190px,1fr))', gap: 10 }}>
+              {achInGroup.map(a => {
+                const ok = a.condition(d);
+                return (
+                  <div key={a.id} style={{ background: ok ? C.surface : C.surface2, border: `1px solid ${ok ? C.amber + '55' : C.border}`, borderRadius: 10, padding: '14px 12px', textAlign: 'center', opacity: ok ? 1 : 0.45, transition: 'all .2s' }}>
+                    <div style={{ fontSize: 30, marginBottom: 6 }}>{a.icon}</div>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: ok ? C.amber : C.muted }}>{a.title}</div>
+                    <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>{a.desc}</div>
+                    {ok && <div style={{ marginTop: 8 }}><Badge label="✓ Unlocked" color={C.green} /></div>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // DASHBOARD
 // ══════════════════════════════════════════════════════════════════════════════
 function Dashboard({ state }) {
+  const prefs = state.prefs || DEFAULT_PREFS;
   const doneTasks = Object.values(state.checked).filter(Boolean).length;
-  const totalXp = state.xp;
   const sessions = state.focusSessions.length;
   const semUnits = state.units.length;
 
-  // upcoming deadlines (next 14 days)
   const cutoff = new Date(); cutoff.setDate(cutoff.getDate() + 14);
   const upcoming = [];
   state.units.forEach(u => {
     (u.assignments || []).filter(a => !a.submitted && a.due && new Date(a.due) <= cutoff)
-      .forEach(a => upcoming.push({ label: `${u.code}: ${a.title}`, due: a.due, type: 'assignment', color: u.color }));
+      .forEach(a => upcoming.push({ label: `${u.code}: ${a.title}`, due: a.due, color: u.color }));
     (u.cats || []).filter(c => !c.score && c.date && new Date(c.date) <= cutoff)
-      .forEach(c => upcoming.push({ label: `${u.code}: ${c.title} (CAT)`, due: c.date, type: 'cat', color: u.color }));
+      .forEach(c => upcoming.push({ label: `${u.code}: ${c.title} (CAT)`, due: c.date, color: u.color }));
     (u.exams || []).filter(e => !e.score && e.date && new Date(e.date) <= cutoff)
-      .forEach(e => upcoming.push({ label: `${u.code}: ${e.title} (Exam)`, due: e.date, type: 'exam', color: u.color }));
+      .forEach(e => upcoming.push({ label: `${u.code}: ${e.title} (Exam)`, due: e.date, color: u.color }));
   });
   upcoming.sort((a, b) => a.due.localeCompare(b.due));
 
-  const recentXP = (state.xpLog || []).slice(0, 5);
-
   return (
     <div style={{ display: 'grid', gap: 14 }}>
+      {/* Profile card */}
+      {(prefs.displayName || prefs.bio) && (
+        <Card style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <div style={{ fontSize: 48 }}>{prefs.avatarEmoji || '🎓'}</div>
+          <div>
+            {prefs.displayName && <div style={{ fontFamily: 'Space Grotesk', fontWeight: 700, fontSize: 20 }}>{prefs.displayName}</div>}
+            {prefs.bio && <div style={{ fontSize: 13, color: C.muted, marginTop: 2 }}>{prefs.bio}</div>}
+          </div>
+          <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
+            <div style={{ fontFamily: 'Space Grotesk', fontWeight: 700, fontSize: 26, color: C.amber }}>{state.xp} ⭐</div>
+            <div style={{ fontSize: 12, color: C.muted }}>{state.streak}🔥 day streak</div>
+          </div>
+        </Card>
+      )}
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12 }}>
         {[
-          { label: 'Total XP', value: totalXp, color: C.amber },
+          { label: 'Total XP', value: state.xp, color: C.amber },
           { label: 'Tasks Done', value: `${doneTasks}/45`, color: C.accent },
           { label: 'Focus Sessions', value: sessions, color: C.purple },
           { label: 'Semester Units', value: semUnits, color: C.green },
@@ -302,72 +829,68 @@ function Dashboard({ state }) {
           {upcoming.slice(0, 6).map((u, i) => {
             const daysLeft = Math.ceil((new Date(u.due) - new Date()) / 86400000);
             return <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', borderBottom: `1px solid ${C.border}` }}>
-              <div style={{ width: 3, height: 32, borderRadius: 2, background: u.color, flexShrink: 0 }} />
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13 }}>{u.label}</div>
-                <div style={{ fontSize: 11, color: daysLeft <= 3 ? C.red : C.muted }}>{daysLeft <= 0 ? 'Overdue!' : `${daysLeft}d left`} · {u.due}</div>
-              </div>
-              <Badge label={u.type} color={u.type === 'exam' ? C.red : u.type === 'cat' ? C.amber : C.accent} />
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: u.color, flexShrink: 0 }} />
+              <div style={{ flex: 1, fontSize: 13 }}>{u.label}</div>
+              <Badge label={daysLeft <= 1 ? 'Tomorrow' : `${daysLeft}d`} color={daysLeft <= 2 ? C.red : C.amber} />
             </div>;
           })}
         </Card>
-
         <Card>
-          <div style={{ fontWeight: 600, marginBottom: 10 }}>⭐ Recent XP earned</div>
-          {recentXP.length === 0 && <div style={{ color: C.muted, fontSize: 13 }}>Complete tasks, diary entries or focus sessions to earn XP.</div>}
-          {recentXP.map((e, i) => (
-            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: `1px solid ${C.border}`, fontSize: 13 }}>
-              <span style={{ color: C.muted }}>{e.reason?.slice(0, 45)}</span>
-              <span style={{ color: C.amber, fontWeight: 600 }}>+{e.amount}</span>
-            </div>
-          ))}
+          <div style={{ fontWeight: 600, marginBottom: 10 }}>📊 Track Progress</div>
+          {TRACKS.map(track => {
+            const all = TASKS.filter(t => t.track === track.id);
+            const done = all.filter(t => state.checked[t.id]).length;
+            return <div key={track.id} style={{ marginBottom: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
+                <span>{track.emoji} {track.label}</span>
+                <span style={{ color: C.muted }}>{done}/{all.length}</span>
+              </div>
+              <ProgressBar value={done} max={all.length} color={track.color} />
+            </div>;
+          })}
         </Card>
       </div>
 
-      {/* holiday progress */}
-      <Card>
-        <div style={{ fontWeight: 600, marginBottom: 10 }}>🗺️ GitAway Roadmap progress</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12 }}>
-          {TRACKS.map(tr => {
-            const all = TASKS.filter(t => t.track === tr.id);
-            const done = all.filter(t => state.checked[t.id]).length;
-            return <div key={tr.id}>
-              <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>{tr.emoji} {tr.label}</div>
-              <ProgressBar value={done} max={all.length} color={tr.color} />
-              <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{done}/{all.length}</div>
-            </div>;
-          })}
-        </div>
-      </Card>
+      {/* Chosen skill roadmaps */}
+      {(prefs.chosenSkills || []).length > 0 && (
+        <Card>
+          <div style={{ fontWeight: 600, marginBottom: 12 }}>🗺️ Your Learning Roadmaps</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {(prefs.chosenSkills || []).map(id => {
+              const skill = SKILL_ROADMAPS.find(s => s.id === id);
+              if (!skill) return null;
+              return <div key={id} style={{ background: skill.color + '18', border: `1px solid ${skill.color}44`, borderRadius: 20, padding: '4px 12px', fontSize: 13, color: skill.color, fontWeight: 600 }}>{skill.emoji} {skill.label}</div>;
+            })}
+          </div>
+        </Card>
+      )}
     </div>
   );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// SEMESTER UNITS (overview)
+// SEMESTER UNITS (dynamic years/sems)
 // ══════════════════════════════════════════════════════════════════════════════
 function UnitsTab({ state, dispatch }) {
-  const SEMESTERS = ['3.1', '3.2', '4.1', '4.2'];
-  const SEM_LABELS = { '3.1': 'Year 3 · Sem 1', '3.2': 'Year 3 · Sem 2', '4.1': 'Year 4 · Sem 1', '4.2': 'Year 4 · Sem 2' };
+  const prefs = state.prefs || DEFAULT_PREFS;
+  const semesters = prefs.semesters || DEFAULT_PREFS.semesters;
 
   const [showAdd, setShowAdd] = useState(false);
-  const [editUnitId, setEditUnitId] = useState(null); // unit being edited in modal
-  const [form, setForm] = useState({ code: '', name: '', color: UNIT_COLORS[0], semester: '3.1' });
+  const [editUnitId, setEditUnitId] = useState(null);
+  const [form, setForm] = useState({ code: '', name: '', color: UNIT_COLORS[0], semester: semesters[0]?.id || '3.1' });
   const [openUnit, setOpenUnit] = useState(null);
 
   const openAddModal = () => {
     setEditUnitId(null);
-    setForm({ code: '', name: '', color: UNIT_COLORS[0], semester: '3.1' });
+    setForm({ code: '', name: '', color: UNIT_COLORS[0], semester: semesters[0]?.id || '3.1' });
     setShowAdd(true);
   };
-
   const openEditModal = (e, unit) => {
     e.stopPropagation();
     setEditUnitId(unit.id);
-    setForm({ code: unit.code, name: unit.name, color: unit.color, semester: unit.semester || '3.1' });
+    setForm({ code: unit.code, name: unit.name, color: unit.color, semester: unit.semester || semesters[0]?.id || '3.1' });
     setShowAdd(true);
   };
-
   const saveUnit = () => {
     if (!form.code || !form.name) return;
     if (editUnitId) {
@@ -376,39 +899,37 @@ function UnitsTab({ state, dispatch }) {
     } else {
       dispatch({ type: 'addUnit', unit: { id: uid(), ...form, topics: [], assignments: [], cats: [], exams: [] } });
     }
-    setShowAdd(false);
-    setEditUnitId(null);
+    setShowAdd(false); setEditUnitId(null);
   };
-
   const deleteUnit = (e, id) => {
     e.stopPropagation();
-    if (window.confirm('Remove this unit and all its data?')) {
-      dispatch({ type: 'removeUnit', id });
-    }
+    if (window.confirm('Remove this unit and all its data?')) dispatch({ type: 'removeUnit', id });
   };
+
+  const semLabels = Object.fromEntries(semesters.map(s => [s.id, s.label || semLabel(s.id)]));
 
   if (openUnit) {
     const unit = state.units.find(u => u.id === openUnit);
     if (!unit) { setOpenUnit(null); return null; }
-    return <UnitDetail unit={unit} dispatch={dispatch} onBack={() => setOpenUnit(null)} semLabels={SEM_LABELS} />;
+    return <UnitDetail unit={unit} dispatch={dispatch} onBack={() => setOpenUnit(null)} semLabels={semLabels} />;
   }
 
-  // Group units by semester
-  const grouped = SEMESTERS.map(sem => ({
-    sem,
-    label: SEM_LABELS[sem],
-    units: state.units.filter(u => (u.semester || '3.1') === sem),
+  const grouped = semesters.map(sem => ({
+    sem: sem.id, label: semLabels[sem.id],
+    units: state.units.filter(u => u.semester === sem.id),
+    completed: (state.completedSemesters || []).includes(sem.id),
   })).filter(g => g.units.length > 0);
-
-  // Units with unknown/old semester values fall into an "Other" group
-  const knownSems = new Set(SEMESTERS);
+  const knownSems = new Set(semesters.map(s => s.id));
   const otherUnits = state.units.filter(u => !knownSems.has(u.semester));
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <span style={{ color: C.muted, fontSize: 13 }}>{state.units.length} unit{state.units.length !== 1 ? 's' : ''}</span>
-        <Btn onClick={openAddModal}>+ Add unit</Btn>
+        <span style={{ color: C.muted, fontSize: 13 }}>{state.units.length} unit{state.units.length !== 1 ? 's' : ''} · {semesters.length} semester{semesters.length !== 1 ? 's' : ''}</span>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Btn outline onClick={() => {}} color={C.muted} style={{ fontSize: 12 }}>Manage in Settings</Btn>
+          <Btn onClick={openAddModal}>+ Add unit</Btn>
+        </div>
       </div>
 
       {state.units.length === 0 && (
@@ -420,15 +941,29 @@ function UnitsTab({ state, dispatch }) {
         </Card>
       )}
 
-      {/* Render grouped by semester */}
-      {[...grouped, ...(otherUnits.length ? [{ sem: 'other', label: 'Other', units: otherUnits }] : [])].map(group => (
+      {[...grouped, ...(otherUnits.length ? [{ sem: 'other', label: 'Other', units: otherUnits, completed: false }] : [])].map(group => (
         <div key={group.sem} style={{ marginBottom: 28 }}>
-          {/* Semester group header */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-            <div style={{ fontWeight: 700, fontSize: 13, color: C.accent, fontFamily: 'Space Grotesk', letterSpacing: '.04em' }}>
-              {group.label}
+            <div style={{ fontWeight: 700, fontSize: 13, color: group.completed ? C.green : C.accent, fontFamily: 'Space Grotesk' }}>
+              {group.completed ? '✅ ' : ''}{group.label}
             </div>
             <div style={{ flex: 1, height: 1, background: C.border }} />
+            {group.sem !== 'other' && !group.completed && (
+              <button onClick={() => {
+                const allSubmitted = group.units.every(u =>
+                  (u.assignments || []).every(a => a.submitted) && (u.exams || []).every(e => e.score)
+                );
+                if (window.confirm(`Mark ${group.label} as complete? This awards +150 XP.`))
+                  dispatch({ type: 'completeSemester', semId: group.sem, clean: allSubmitted });
+              }} style={{ background: C.green + '22', border: `1px solid ${C.green}44`, color: C.green, borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600 }}>
+                ✓ Mark Complete
+              </button>
+            )}
+            {group.completed && (
+              <button onClick={() => dispatch({ type: 'uncompleteSemester', semId: group.sem })} style={{ background: 'none', border: 'none', color: C.muted, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit' }}>
+                Undo
+              </button>
+            )}
             <span style={{ fontSize: 11, color: C.muted }}>{group.units.length} unit{group.units.length !== 1 ? 's' : ''}</span>
           </div>
 
@@ -446,31 +981,17 @@ function UnitsTab({ state, dispatch }) {
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontWeight: 700, color: unit.color }}>{unit.code}</div>
                       <div style={{ fontSize: 13, marginTop: 2 }}>{unit.name}</div>
-                      <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{SEM_LABELS[unit.semester] || unit.semester}</div>
+                      <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{semLabels[unit.semester] || unit.semester}</div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0, marginLeft: 8 }}>
                       {pending > 0 && <Badge label={`${pending} pending`} color={C.red} />}
-                      {/* Edit icon */}
-                      <button
-                        onClick={(e) => openEditModal(e, unit)}
-                        title="Edit unit"
-                        style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 15, padding: '2px 4px', borderRadius: 4, lineHeight: 1 }}
-                        onMouseEnter={e => e.currentTarget.style.color = C.accent}
-                        onMouseLeave={e => e.currentTarget.style.color = C.muted}
-                      >✏️</button>
-                      {/* Delete icon */}
-                      <button
-                        onClick={(e) => deleteUnit(e, unit.id)}
-                        title="Delete unit"
-                        style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 15, padding: '2px 4px', borderRadius: 4, lineHeight: 1 }}
-                        onMouseEnter={e => e.currentTarget.style.color = C.red}
-                        onMouseLeave={e => e.currentTarget.style.color = C.muted}
-                      >🗑️</button>
+                      <button onClick={e => openEditModal(e, unit)} style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 15, padding: '2px 4px' }}>✏️</button>
+                      <button onClick={e => deleteUnit(e, unit.id)} style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 15, padding: '2px 4px' }}>🗑️</button>
                     </div>
                   </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginTop: 10 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8 }}>
                     {[
-                      { label: 'Assignments', val: assignments.length, done: assignments.filter(a => a.submitted).length },
+                      { label: 'Assign.', val: assignments.length, done: assignments.filter(a => a.submitted).length },
                       { label: 'CATs', val: cats.length, done: cats.filter(c => c.score).length },
                       { label: 'Topics', val: topics.length, done: mastered },
                     ].map(s => (
@@ -495,24 +1016,23 @@ function UnitsTab({ state, dispatch }) {
             <Input value={form.name} onChange={v => setForm(f => ({ ...f, name: v }))} placeholder="Unit name e.g. Database Systems" />
             <div>
               <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>Year · Semester</div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 6 }}>
-                {SEMESTERS.map(s => (
-                  <button key={s} onClick={() => setForm(f => ({ ...f, semester: s }))} style={{
-                    padding: '8px 4px', borderRadius: 7, border: `2px solid ${form.semester === s ? C.accent : C.border}`,
-                    background: form.semester === s ? C.accent + '22' : C.surface2, color: form.semester === s ? C.accent : C.muted,
-                    cursor: 'pointer', fontSize: 13, fontWeight: 600, fontFamily: 'inherit',
-                  }}>{s}</button>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(90px,1fr))', gap: 6 }}>
+                {semesters.map(s => (
+                  <button key={s.id} onClick={() => setForm(f => ({ ...f, semester: s.id }))} style={{
+                    padding: '8px 4px', borderRadius: 7, border: `2px solid ${form.semester === s.id ? C.accent : C.border}`,
+                    background: form.semester === s.id ? C.accent + '22' : C.surface2,
+                    color: form.semester === s.id ? C.accent : C.muted,
+                    cursor: 'pointer', fontSize: 12, fontWeight: 600, fontFamily: 'inherit',
+                  }}>{s.label || semLabel(s.id)}</button>
                 ))}
               </div>
-              <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>{SEM_LABELS[form.semester]}</div>
             </div>
             <div>
               <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>Colour</div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {UNIT_COLORS.map(c => (
                   <div key={c} onClick={() => setForm(f => ({ ...f, color: c }))}
-                    style={{ width: 28, height: 28, borderRadius: '50%', background: c, cursor: 'pointer',
-                      border: form.color === c ? '3px solid white' : '2px solid transparent' }} />
+                    style={{ width: 28, height: 28, borderRadius: '50%', background: c, cursor: 'pointer', border: form.color === c ? '3px solid white' : '2px solid transparent' }} />
                 ))}
               </div>
             </div>
@@ -525,7 +1045,7 @@ function UnitsTab({ state, dispatch }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// UNIT DETAIL (assignments, cats, exams, mastery)
+// UNIT DETAIL
 // ══════════════════════════════════════════════════════════════════════════════
 function UnitDetail({ unit, dispatch, onBack, semLabels = {} }) {
   const [tab, setTab] = useState('assignments');
@@ -567,42 +1087,31 @@ function UnitDetail({ unit, dispatch, onBack, semLabels = {} }) {
   const cats = unit.cats || [];
   const exams = unit.exams || [];
   const topics = unit.topics || [];
-
-  const tabStyle = (t) => ({
-    padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer', border: 'none', background: 'none',
-    color: tab === t ? unit.color : C.muted, borderBottom: `2px solid ${tab === t ? unit.color : 'transparent'}`,
-    fontFamily: 'inherit',
-  });
+  const tabStyle = (t) => ({ padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer', border: 'none', background: 'none', color: tab === t ? unit.color : C.muted, borderBottom: `2px solid ${tab === t ? unit.color : 'transparent'}`, fontFamily: 'inherit' });
 
   return (
     <div>
-      <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.accent, cursor: 'pointer', fontSize: 13, marginBottom: 14, fontFamily: 'inherit' }}>← Back to units</button>
+      <button onClick={onBack} style={{ background: 'none', border: 'none', color: C.accent, cursor: 'pointer', fontSize: 13, marginBottom: 14, fontFamily: 'inherit' }}>← Back</button>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 16 }}>
         <div style={{ width: 6, height: 40, borderRadius: 3, background: unit.color }} />
         <div>
           <div style={{ fontWeight: 700, fontSize: 18, color: unit.color }}>{unit.code}</div>
           <div style={{ fontSize: 13, color: C.muted }}>{unit.name} · {semLabels[unit.semester] || unit.semester}</div>
         </div>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-          <button
-            title="Remove unit"
-            onClick={() => { if (window.confirm('Remove this unit and all its data?')) { dispatch({ type: 'removeUnit', id: unit.id }); onBack(); } }}
+        <div style={{ marginLeft: 'auto' }}>
+          <button onClick={() => { if (window.confirm('Remove unit?')) { dispatch({ type: 'removeUnit', id: unit.id }); onBack(); } }}
             style={{ background: 'none', border: `1px solid ${C.red}44`, color: C.red, borderRadius: 6, padding: '5px 10px', cursor: 'pointer', fontSize: 13 }}>🗑️ Remove</button>
         </div>
       </div>
-
       <div style={{ display: 'flex', borderBottom: `1px solid ${C.border}`, marginBottom: 18 }}>
-        {[['assignments','📋 Assignments'],['cats','📝 CATs'],['exams','📚 Exams'],['mastery','🧠 Mastery']].map(([t, l]) => (
+        {[['assignments','📋 Assignments'],['cats','📝 CATs'],['exams','📚 Exams'],['mastery','🧠 Mastery']].map(([t,l]) => (
           <button key={t} style={tabStyle(t)} onClick={() => setTab(t)}>{l}</button>
         ))}
       </div>
 
-      {/* ASSIGNMENTS */}
       {tab === 'assignments' && (
         <div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-            <Btn onClick={() => openAdd('assignment')}>+ Add assignment</Btn>
-          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}><Btn onClick={() => openAdd('assignment')}>+ Add</Btn></div>
           {assignments.length === 0 && <div style={{ color: C.muted, fontSize: 13 }}>No assignments yet.</div>}
           {assignments.map(a => {
             const pct = a.grade ? Math.round(parseFloat(a.grade) / (a.outOf || 100) * 100) : null;
@@ -611,40 +1120,35 @@ function UnitDetail({ unit, dispatch, onBack, semLabels = {} }) {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                   <div>
                     <div style={{ fontWeight: 600 }}>{a.title}</div>
-                    {a.due && <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Due: {a.due}</div>}
-                    {a.notes && <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>{a.notes}</div>}
+                    {a.due && <div style={{ fontSize: 12, color: C.muted }}>Due: {a.due}</div>}
                   </div>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     {pct !== null && <Badge label={`${pct}%`} color={pct >= 70 ? C.green : pct >= 50 ? C.amber : C.red} />}
-                    <Badge label={a.submitted ? '✓ Submitted' : 'Pending'} color={a.submitted ? C.green : C.amber} />
+                    <Badge label={a.submitted ? '✓' : 'Pending'} color={a.submitted ? C.green : C.amber} />
                     <button onClick={() => openEdit('assignment', a)} style={{ background: 'none', border: 'none', color: C.accent, cursor: 'pointer', fontSize: 12 }}>Edit</button>
                   </div>
                 </div>
-                {a.grade && <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>Score: {a.grade}/{a.outOf}</div>}
               </Card>
             );
           })}
         </div>
       )}
 
-      {/* CATS */}
       {tab === 'cats' && (
         <div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-            <Btn onClick={() => openAdd('cat')}>+ Add CAT</Btn>
-          </div>
-          {cats.length === 0 && <div style={{ color: C.muted, fontSize: 13 }}>No CATs added yet.</div>}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}><Btn onClick={() => openAdd('cat')}>+ Add CAT</Btn></div>
+          {cats.length === 0 && <div style={{ color: C.muted, fontSize: 13 }}>No CATs yet.</div>}
           {cats.map(c => {
             const pct = c.score ? Math.round(parseFloat(c.score) / (c.outOf || 30) * 100) : null;
             return (
-              <Card key={c.id} style={{ marginBottom: 10, borderLeft: `3px solid ${pct !== null ? (pct >= 70 ? C.green : pct >= 50 ? C.amber : C.red) : C.border}` }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Card key={c.id} style={{ marginBottom: 10, borderLeft: `3px solid ${pct !== null ? (pct >= 50 ? C.green : C.red) : C.border}` }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <div>
                     <div style={{ fontWeight: 600 }}>{c.title}</div>
-                    {c.date && <div style={{ fontSize: 12, color: C.muted }}>Date: {c.date}</div>}
+                    {c.date && <div style={{ fontSize: 12, color: C.muted }}>{c.date}</div>}
                   </div>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    {pct !== null ? <Badge label={`${c.score}/${c.outOf} (${pct}%)`} color={pct >= 70 ? C.green : pct >= 50 ? C.amber : C.red} /> : <Badge label="Not graded" color={C.muted} />}
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    {pct !== null ? <Badge label={`${pct}%`} color={pct >= 70 ? C.green : pct >= 50 ? C.amber : C.red} /> : <Badge label="Pending" color={C.amber} />}
                     <button onClick={() => openEdit('cat', c)} style={{ background: 'none', border: 'none', color: C.accent, cursor: 'pointer', fontSize: 12 }}>Edit</button>
                   </div>
                 </div>
@@ -654,24 +1158,21 @@ function UnitDetail({ unit, dispatch, onBack, semLabels = {} }) {
         </div>
       )}
 
-      {/* EXAMS */}
       {tab === 'exams' && (
         <div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-            <Btn onClick={() => openAdd('exam')}>+ Add exam</Btn>
-          </div>
-          {exams.length === 0 && <div style={{ color: C.muted, fontSize: 13 }}>No exams added yet.</div>}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}><Btn onClick={() => openAdd('exam')}>+ Add Exam</Btn></div>
+          {exams.length === 0 && <div style={{ color: C.muted, fontSize: 13 }}>No exams yet.</div>}
           {exams.map(e => {
             const pct = e.score ? Math.round(parseFloat(e.score) / (e.outOf || 70) * 100) : null;
             return (
-              <Card key={e.id} style={{ marginBottom: 10, borderLeft: `3px solid ${C.red}` }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Card key={e.id} style={{ marginBottom: 10, borderLeft: `3px solid ${pct !== null ? (pct >= 40 ? C.green : C.red) : C.border}` }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <div>
                     <div style={{ fontWeight: 600 }}>{e.title}</div>
-                    {e.date && <div style={{ fontSize: 12, color: C.muted }}>Date: {e.date}</div>}
+                    {e.date && <div style={{ fontSize: 12, color: C.muted }}>{e.date}</div>}
                   </div>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    {pct !== null ? <Badge label={`${e.score}/${e.outOf} (${pct}%)`} color={pct >= 70 ? C.green : pct >= 40 ? C.amber : C.red} /> : <Badge label="Upcoming" color={C.muted} />}
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    {pct !== null ? <Badge label={`${pct}%`} color={pct >= 70 ? C.green : pct >= 40 ? C.amber : C.red} /> : <Badge label="Upcoming" color={C.amber} />}
                     <button onClick={() => openEdit('exam', e)} style={{ background: 'none', border: 'none', color: C.accent, cursor: 'pointer', fontSize: 12 }}>Edit</button>
                   </div>
                 </div>
@@ -681,127 +1182,66 @@ function UnitDetail({ unit, dispatch, onBack, semLabels = {} }) {
         </div>
       )}
 
-      {/* MASTERY */}
       {tab === 'mastery' && (
         <div>
-          {/* Add topic row */}
-          <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
-            <Input value={topicInput} onChange={setTopicInput} placeholder="Add topic e.g. Hypothesis testing" style={{ flex: 1, minWidth: 200 }} />
-            <Select value={topicGroup} onChange={setTopicGroup} style={{ width: 160 }}>
-              {/* derive existing groups from topics, always include General */}
-              {['General', ...Array.from(new Set((unit.topics || []).map(t => t.group || 'General').filter(g => g !== 'General')))].map(g => (
-                <option key={g} value={g}>{g}</option>
-              ))}
-              <option value="__new__">+ New group…</option>
-            </Select>
-            {topicGroup === '__new__' && (
-              <Input value={collapsedGroups.__newName || ''} onChange={v => setCollapsedGroups(g => ({ ...g, __newName: v }))}
-                placeholder="Group name" style={{ width: 140 }}
-                onKeyDown={e => { if (e.key === 'Enter' && collapsedGroups.__newName?.trim()) { setTopicGroup(collapsedGroups.__newName.trim()); setCollapsedGroups(g => { const n = {...g}; delete n.__newName; return n; }); } }}
-              />
-            )}
-            <Btn onClick={() => {
-              const grp = topicGroup === '__new__' ? (collapsedGroups.__newName?.trim() || 'General') : topicGroup;
-              if (!topicInput.trim()) return;
-              dispatch({ type: 'addTopic', unitId: unit.id, topic: { id: uid(), name: topicInput.trim(), mastery: 0, notes: '', group: grp } });
-              setTopicInput('');
-              if (topicGroup === '__new__') { setTopicGroup(grp); setCollapsedGroups(g => { const n = {...g}; delete n.__newName; return n; }); }
-            }}>+ Add topic</Btn>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+            <input value={topicInput} onChange={e => setTopicInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && addTopic()} placeholder="New topic name..." style={{ background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: '8px 10px', fontSize: 13, flex: 1, minWidth: 160, fontFamily: 'inherit' }} />
+            <input value={topicGroup} onChange={e => setTopicGroup(e.target.value)} placeholder="Group" style={{ background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: '8px 10px', fontSize: 13, width: 120, fontFamily: 'inherit' }} />
+            <Btn onClick={addTopic}>+ Add</Btn>
           </div>
-
-          {/* Mastery legend */}
-          <div style={{ display: 'flex', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
-            {MASTERY_LEVELS.map(m => (
-              <span key={m.level} style={{ fontSize: 12, color: m.color, display: 'flex', alignItems: 'center', gap: 4 }}>
-                <span style={{ fontSize: 14 }}>{m.icon}</span>{m.label}
-              </span>
-            ))}
-          </div>
-
-          {topics.length === 0 && <div style={{ color: C.muted, fontSize: 13 }}>Add course topics to track your mastery level. Use groups to organise by chapter or theme.</div>}
-
-          {/* Grouped rendering */}
           {(() => {
-            const groups = Array.from(new Set(topics.map(t => t.group || 'General')));
-            return groups.map(grp => {
-              const grpTopics = topics.filter(t => (t.group || 'General') === grp);
-              const grpMastered = grpTopics.filter(t => t.mastery === 4).length;
-              const collapsed = !!collapsedGroups[grp];
-              return (
-                <div key={grp} style={{ marginBottom: 16 }}>
-                  {/* Group header */}
-                  <div
-                    onClick={() => setCollapsedGroups(g => ({ ...g, [grp]: !g[grp] }))}
-                    style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: C.surface2, borderRadius: 7, cursor: 'pointer', marginBottom: collapsed ? 0 : 8 }}>
-                    <span style={{ fontSize: 13, color: C.muted, userSelect: 'none' }}>{collapsed ? '▸' : '▾'}</span>
-                    <span style={{ fontWeight: 600, fontSize: 13 }}>{grp}</span>
-                    <div style={{ flex: 1 }}>
-                      <ProgressBar value={grpMastered} max={grpTopics.length} color={unit.color} height={4} />
-                    </div>
-                    <span style={{ fontSize: 11, color: C.muted, whiteSpace: 'nowrap' }}>{grpMastered}/{grpTopics.length} mastered</span>
-                    {grpMastered > 0 && <span style={{ fontSize: 11, color: C.amber }}>+{grpMastered * 25} XP</span>}
-                  </div>
-
-                  {!collapsed && grpTopics.map(topic => {
-                    const ml = MASTERY_LEVELS[topic.mastery || 0];
-                    return (
-                      <div key={topic.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '9px 12px', borderBottom: `1px solid ${C.border}`, background: C.surface, borderRadius: 6, marginBottom: 2 }}>
-                        <span style={{ fontSize: 18, color: ml.color, flexShrink: 0 }}>{ml.icon}</span>
-                        <span style={{ flex: 1, fontSize: 14 }}>{topic.name}</span>
-                        {/* Mastery buttons */}
-                        <div style={{ display: 'flex', gap: 3 }}>
-                          {MASTERY_LEVELS.map(m => (
-                            <button key={m.level} onClick={() => dispatch({ type: 'setMastery', unitId: unit.id, topicId: topic.id, level: m.level })}
-                              title={m.label}
-                              style={{ width: 22, height: 22, borderRadius: '50%', border: `2px solid ${m.color}`, background: (topic.mastery || 0) >= m.level ? m.color : 'transparent', cursor: 'pointer', fontSize: 9, transition: 'all .15s' }} />
-                          ))}
-                        </div>
-                        <button onClick={() => dispatch({ type: 'removeTopic', unitId: unit.id, topicId: topic.id })}
-                          style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 14, padding: '0 4px' }}
-                          title="Remove topic">✕</button>
-                      </div>
-                    );
-                  })}
+            const groups = {};
+            topics.forEach(t => { const g = t.group || 'General'; if (!groups[g]) groups[g] = []; groups[g].push(t); });
+            return Object.entries(groups).map(([g, ts]) => (
+              <div key={g} style={{ marginBottom: 16 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, cursor: 'pointer' }} onClick={() => setCollapsedGroups(c => ({ ...c, [g]: !c[g] }))}>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>{collapsedGroups[g] ? '▶' : '▼'} {g}</div>
+                  <div style={{ fontSize: 11, color: C.muted }}>{ts.filter(t => t.mastery === 4).length}/{ts.length}</div>
                 </div>
-              );
-            });
+                {!collapsedGroups[g] && ts.map(topic => (
+                  <div key={topic.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: `1px solid ${C.border}` }}>
+                    <button onClick={() => dispatch({ type: 'removeTopic', unitId: unit.id, topicId: topic.id })} style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 12, padding: 0 }}>✕</button>
+                    <div style={{ flex: 1, fontSize: 13 }}>{topic.name}</div>
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      {MASTERY_LEVELS.map(l => (
+                        <button key={l.level} onClick={() => dispatch({ type: 'setMastery', unitId: unit.id, topicId: topic.id, level: l.level })} title={l.label}
+                          style={{ width: 26, height: 26, borderRadius: '50%', border: `2px solid ${topic.mastery === l.level ? l.color : C.border}`, background: topic.mastery === l.level ? l.color + '44' : 'none', cursor: 'pointer', fontSize: 12, color: l.color }}>
+                          {l.icon}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ));
           })()}
-
           {topics.length > 0 && (
             <div style={{ marginTop: 16 }}>
-              <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>Overall mastery across all groups</div>
               <ProgressBar value={topics.reduce((s, t) => s + (t.mastery || 0), 0)} max={topics.length * 4} color={unit.color} height={10} />
-              <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>
-                {topics.filter(t => t.mastery === 4).length}/{topics.length} topics mastered
-                {topics.filter(t => t.mastery === 4).length > 0 && <span style={{ color: C.amber }}> · +{topics.filter(t => t.mastery === 4).length * 25} XP</span>}
-              </div>
+              <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>{topics.filter(t => t.mastery === 4).length}/{topics.length} mastered</div>
             </div>
           )}
         </div>
       )}
 
-      {/* modals */}
       {modal === 'assignment' && (
         <Modal title={editItem ? 'Edit Assignment' : 'Add Assignment'} onClose={() => setModal(null)}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <Input value={form.title || ''} onChange={v => setForm(f => ({ ...f, title: v }))} placeholder="Title e.g. Project proposal" />
+            <Input value={form.title || ''} onChange={v => setForm(f => ({ ...f, title: v }))} placeholder="Title" />
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
               <div><div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Due date</div><Input type="date" value={form.due || ''} onChange={v => setForm(f => ({ ...f, due: v }))} /></div>
               <div><div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Out of</div><Input type="number" value={form.outOf || 100} onChange={v => setForm(f => ({ ...f, outOf: v }))} /></div>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              <div><div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Score (if graded)</div><Input type="number" value={form.grade || ''} onChange={v => setForm(f => ({ ...f, grade: v }))} placeholder="Leave blank if not yet" /></div>
+              <div><div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Score</div><Input type="number" value={form.grade || ''} onChange={v => setForm(f => ({ ...f, grade: v }))} placeholder="Leave blank if not graded" /></div>
               <div style={{ display: 'flex', alignItems: 'flex-end', paddingBottom: 2 }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
-                  <input type="checkbox" checked={!!form.submitted} onChange={e => setForm(f => ({ ...f, submitted: e.target.checked }))} />
-                  Submitted
+                  <input type="checkbox" checked={!!form.submitted} onChange={e => setForm(f => ({ ...f, submitted: e.target.checked }))} /> Submitted
                 </label>
               </div>
             </div>
-            <textarea value={form.notes || ''} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Notes..."
-              style={{ background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: 10, fontSize: 13, resize: 'vertical', minHeight: 60, fontFamily: 'inherit' }} />
-            <div style={{ fontSize: 11, color: C.amber }}>⭐ XP is awarded automatically on submission and grading</div>
-            <Btn onClick={saveAssignment}>{editItem ? 'Save changes' : 'Add Assignment'}</Btn>
+            <div style={{ fontSize: 11, color: C.amber }}>⭐ XP awarded automatically on submission and grading</div>
+            <Btn onClick={saveAssignment}>{editItem ? 'Save' : 'Add'}</Btn>
           </div>
         </Modal>
       )}
@@ -813,10 +1253,9 @@ function UnitDetail({ unit, dispatch, onBack, semLabels = {} }) {
               <div><div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Date</div><Input type="date" value={form.date || ''} onChange={v => setForm(f => ({ ...f, date: v }))} /></div>
               <div><div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Out of</div><Input type="number" value={form.outOf || 30} onChange={v => setForm(f => ({ ...f, outOf: v }))} /></div>
             </div>
-            <div><div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Score (when you get it back)</div>
-              <Input type="number" value={form.score || ''} onChange={v => setForm(f => ({ ...f, score: v }))} placeholder="Leave blank until graded" /></div>
-            <div style={{ fontSize: 11, color: C.amber }}>⭐ XP awarded automatically when score is entered (pass: +40, distinction: +70)</div>
-            <Btn onClick={saveCat}>{editItem ? 'Save changes' : 'Add CAT'}</Btn>
+            <Input type="number" value={form.score || ''} onChange={v => setForm(f => ({ ...f, score: v }))} placeholder="Score (leave blank until graded)" />
+            <div style={{ fontSize: 11, color: C.amber }}>⭐ XP: pass +40, distinction +70</div>
+            <Btn onClick={saveCat}>{editItem ? 'Save' : 'Add CAT'}</Btn>
           </div>
         </Modal>
       )}
@@ -828,10 +1267,9 @@ function UnitDetail({ unit, dispatch, onBack, semLabels = {} }) {
               <div><div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Date</div><Input type="date" value={form.date || ''} onChange={v => setForm(f => ({ ...f, date: v }))} /></div>
               <div><div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Out of</div><Input type="number" value={form.outOf || 70} onChange={v => setForm(f => ({ ...f, outOf: v }))} /></div>
             </div>
-            <div><div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Score (after results)</div>
-              <Input type="number" value={form.score || ''} onChange={v => setForm(f => ({ ...f, score: v }))} placeholder="Leave blank until results" /></div>
-            <div style={{ fontSize: 11, color: C.amber }}>⭐ XP awarded automatically (pass: +80, distinction: +120)</div>
-            <Btn onClick={saveExam}>{editItem ? 'Save changes' : 'Add Exam'}</Btn>
+            <Input type="number" value={form.score || ''} onChange={v => setForm(f => ({ ...f, score: v }))} placeholder="Score (after results)" />
+            <div style={{ fontSize: 11, color: C.amber }}>⭐ XP: pass +80, distinction +120</div>
+            <Btn onClick={saveExam}>{editItem ? 'Save' : 'Add Exam'}</Btn>
           </div>
         </Modal>
       )}
@@ -844,53 +1282,19 @@ function UnitDetail({ unit, dispatch, onBack, semLabels = {} }) {
 // ══════════════════════════════════════════════════════════════════════════════
 function TimetableTab({ state, dispatch }) {
   const [showAdd, setShowAdd] = useState(false);
-  const [form, setForm] = useState({ day: 'Mon', time: '8:00', unitId: '', type: 'Lecture', duration: 1, notes: '', room: '' });
-  const [showOneNote, setShowOneNote] = useState(false);
-
-  const addSlot = () => {
-    dispatch({ type: 'addSlot', slot: { id: uid(), ...form } });
-    setShowAdd(false);
-  };
-
-  const slotsByDay = DAYS.map(day => ({
-    day, slots: state.timetable.filter(s => s.day === day).sort((a, b) => a.time.localeCompare(b.time))
-  }));
-
+  const [form, setForm] = useState({ day: 'Mon', time: '8:00', unitId: '', type: 'Lecture', room: '', notes: '' });
+  const slotsByDay = DAYS.map(day => ({ day, slots: state.timetable.filter(s => s.day === day).sort((a,b) => a.time.localeCompare(b.time)) }));
   const getUnit = (id) => state.units.find(u => u.id === id);
-
-  // generate onenote text
-  const oneNoteText = slotsByDay.map(({ day, slots }) => {
-    if (!slots.length) return '';
-    return `${day}:\n` + slots.map(s => {
-      const u = getUnit(s.unitId);
-      return `  ${s.time} – ${u ? u.code : 'Unknown'} (${s.type})${s.room ? ' @ ' + s.room : ''}${s.notes ? ' | ' + s.notes : ''}`;
-    }).join('\n');
-  }).filter(Boolean).join('\n\n');
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+      <div style={{ display: 'flex', gap: 10, marginBottom: 16, alignItems: 'center' }}>
         <span style={{ color: C.muted, fontSize: 13 }}>{state.timetable.length} slots</span>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-          <Btn outline onClick={() => setShowOneNote(o => !o)}>📋 Export for OneNote</Btn>
+        <div style={{ marginLeft: 'auto' }}>
           {state.units.length > 0 && <Btn onClick={() => setShowAdd(true)}>+ Add slot</Btn>}
         </div>
       </div>
-
-      {state.units.length === 0 && (
-        <Card style={{ textAlign: 'center', padding: 32 }}>
-          <div style={{ color: C.muted, fontSize: 13 }}>Add your units first, then build your timetable.</div>
-        </Card>
-      )}
-
-      {showOneNote && (
-        <Card style={{ marginBottom: 16, background: '#0d1117' }}>
-          <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 13 }}>📋 Copy this into your OneNote timetable page</div>
-          <pre style={{ fontSize: 12, color: C.muted, whiteSpace: 'pre-wrap', lineHeight: 1.8 }}>{oneNoteText || 'No slots yet'}</pre>
-        </Card>
-      )}
-
-      {/* grid */}
+      {state.units.length === 0 && <Card style={{ textAlign: 'center', padding: 32 }}><div style={{ color: C.muted }}>Add units first.</div></Card>}
       <div style={{ overflowX: 'auto' }}>
         <div style={{ display: 'grid', gridTemplateColumns: `80px repeat(${DAYS.length}, 1fr)`, gap: 2, minWidth: 700 }}>
           <div />
@@ -905,8 +1309,8 @@ function TimetableTab({ state, dispatch }) {
                     {slots.map(slot => {
                       const u = getUnit(slot.unitId);
                       return (
-                        <div key={slot.id} style={{ background: u?.color + '33', border: `1px solid ${u?.color || C.border}`, borderRadius: 4, padding: '3px 6px', fontSize: 11, marginBottom: 2, cursor: 'pointer' }}
-                          onClick={() => dispatch({ type: 'removeSlot', id: slot.id })} title="Click to remove">
+                        <div key={slot.id} onClick={() => dispatch({ type: 'removeSlot', id: slot.id })} title="Click to remove"
+                          style={{ background: u?.color + '33', border: `1px solid ${u?.color || C.border}`, borderRadius: 4, padding: '3px 6px', fontSize: 11, marginBottom: 2, cursor: 'pointer' }}>
                           <div style={{ fontWeight: 600, color: u?.color }}>{u?.code || '?'}</div>
                           <div style={{ color: C.muted }}>{slot.type}{slot.room ? ` · ${slot.room}` : ''}</div>
                         </div>
@@ -920,31 +1324,24 @@ function TimetableTab({ state, dispatch }) {
         </div>
       </div>
       <div style={{ marginTop: 8, fontSize: 11, color: C.muted }}>Click a slot to remove it.</div>
-
       {showAdd && (
-        <Modal title="Add Timetable Slot" onClose={() => setShowAdd(false)}>
+        <Modal title="Add Slot" onClose={() => setShowAdd(false)}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              <div><div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Day</div>
-                <Select value={form.day} onChange={v => setForm(f => ({ ...f, day: v }))}>{DAYS.map(d => <option key={d}>{d}</option>)}</Select></div>
-              <div><div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Time</div>
-                <Select value={form.time} onChange={v => setForm(f => ({ ...f, time: v }))}>{TIMES.map(t => <option key={t}>{t}</option>)}</Select></div>
+              <div><div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Day</div><Select value={form.day} onChange={v => setForm(f => ({ ...f, day: v }))}>{DAYS.map(d => <option key={d}>{d}</option>)}</Select></div>
+              <div><div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Time</div><Select value={form.time} onChange={v => setForm(f => ({ ...f, time: v }))}>{TIMES.map(t => <option key={t}>{t}</option>)}</Select></div>
             </div>
-            <div><div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Unit</div>
-              <Select value={form.unitId} onChange={v => setForm(f => ({ ...f, unitId: v }))}>
-                <option value="">Select unit</option>
-                {state.units.map(u => <option key={u.id} value={u.id}>{u.code} – {u.name}</option>)}
-              </Select></div>
+            <Select value={form.unitId} onChange={v => setForm(f => ({ ...f, unitId: v }))}>
+              <option value="">Select unit</option>
+              {state.units.map(u => <option key={u.id} value={u.id}>{u.code}</option>)}
+            </Select>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              <div><div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Type</div>
-                <Select value={form.type} onChange={v => setForm(f => ({ ...f, type: v }))}>
-                  {['Lecture','Tutorial','Lab','Study','CAT','Exam'].map(t => <option key={t}>{t}</option>)}
-                </Select></div>
-              <div><div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Room / venue</div>
-                <Input value={form.room} onChange={v => setForm(f => ({ ...f, room: v }))} placeholder="e.g. LH1" /></div>
+              <Select value={form.type} onChange={v => setForm(f => ({ ...f, type: v }))}>
+                {['Lecture','Tutorial','Lab','Study','CAT','Exam'].map(t => <option key={t}>{t}</option>)}
+              </Select>
+              <Input value={form.room} onChange={v => setForm(f => ({ ...f, room: v }))} placeholder="Room / venue" />
             </div>
-            <Input value={form.notes} onChange={v => setForm(f => ({ ...f, notes: v }))} placeholder="Notes (optional)" />
-            <Btn onClick={addSlot} disabled={!form.unitId}>Add Slot</Btn>
+            <Btn onClick={() => { dispatch({ type: 'addSlot', slot: { id: uid(), ...form } }); setShowAdd(false); }} disabled={!form.unitId}>Add Slot</Btn>
           </div>
         </Modal>
       )}
@@ -959,186 +1356,117 @@ function AITab({ state, dispatch }) {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef(null);
+  const prefs = state.prefs || DEFAULT_PREFS;
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [state.aiHistory, loading]);
 
   const unitsSummary = state.units.map(u => {
     const pending = (u.assignments || []).filter(a => !a.submitted).length;
-    const cats = (u.cats || []).length;
-    const mastered = (u.topics || []).filter(t => t.mastery === 4).length;
-    return `${u.code} (${u.name}): ${pending} pending assignments, ${cats} CATs, ${mastered}/${(u.topics||[]).length} topics mastered`;
+    return `${u.code} (${u.name}): ${pending} pending assignments, ${(u.cats||[]).length} CATs, ${(u.topics||[]).filter(t=>t.mastery===4).length}/${(u.topics||[]).length} topics mastered`;
   }).join('\n');
 
-  const systemPrompt = `You are a friendly, knowledgeable academic assistant for a Data Science & Analytics student at JKUAT (Jomo Kenyatta University of Agriculture and Technology) in Kenya, currently in Year 3.
+  const name = prefs.displayName || 'Student';
+  const systemPrompt = `You are a friendly academic assistant for ${name}${prefs.bio ? ` (${prefs.bio})` : ''}.
 
-The student is also doing self-study during holidays covering: Python/Pandas, Power BI, SQL, React, data visualization, and preparing for internships.
-
-Their current semester units:
+Semester units:
 ${unitsSummary || 'No units added yet.'}
+XP: ${state.xp} | Streak: ${state.streak} days | Tasks done: ${Object.values(state.checked).filter(Boolean).length}/45
+Chosen roadmaps: ${(prefs.chosenSkills||[]).join(', ') || 'none yet'}
 
-Their XP: ${state.xp} | Streak: ${state.streak} days | Tasks done: ${Object.values(state.checked).filter(Boolean).length}/45
-
-You can help with:
-- Explaining Data Science, Statistics, Programming, and Math concepts
-- Assignment guidance (explain concepts, not write answers directly)
-- CAT/exam revision strategies and practice questions
-- Study planning and time management
-- Internship advice relevant to Kenya tech market
-- General academic support
-
-Keep responses concise but thorough. Use examples when helpful. Encourage the student.`;
+Help with: Data Science, Statistics, Programming, Math concepts, assignment guidance, CAT/exam revision, study planning, Kenya internship advice. Keep responses concise but thorough.`;
 
   const send = async () => {
     if (!input.trim() || loading) return;
     const userMsg = { role: 'user', content: input.trim() };
     dispatch({ type: 'aiMessage', msg: userMsg });
-    setInput('');
-    setLoading(true);
-
-    const messages = [...state.aiHistory, userMsg].map(m => ({ role: m.role, content: m.content }));
-
+    setInput(''); setLoading(true);
     try {
       const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 1000,
-          system: systemPrompt,
-          messages,
-        }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 1000, system: systemPrompt, messages: [...state.aiHistory, userMsg].map(m => ({ role: m.role, content: m.content })) }),
       });
       const data = await res.json();
-      const reply = data.content?.[0]?.text || 'Sorry, I could not get a response.';
-      dispatch({ type: 'aiMessage', msg: { role: 'assistant', content: reply } });
-    } catch {
-      dispatch({ type: 'aiMessage', msg: { role: 'assistant', content: 'Network error — make sure you are connected and try again.' } });
-    }
+      dispatch({ type: 'aiMessage', msg: { role: 'assistant', content: data.content?.[0]?.text || 'No response.' } });
+    } catch { dispatch({ type: 'aiMessage', msg: { role: 'assistant', content: 'Network error — check connection and try again.' } }); }
     setLoading(false);
   };
 
-  const suggestions = [
-    'Explain hypothesis testing with an example',
-    'What SQL joins should I know for interviews?',
-    'Help me revise for a Data Structures CAT',
-    'Give me 5 practice questions on Python pandas',
-    'How do I build a strong internship CV in Kenya?',
-    'Explain the difference between supervised and unsupervised learning',
-  ];
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 160px)', maxHeight: 700 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <div style={{ fontSize: 13, color: C.muted }}>🤖 Powered by Claude · {state.aiQuestions || 0} questions asked</div>
-        <Btn outline onClick={() => dispatch({ type: 'clearAI' })} style={{ fontSize: 12, padding: '4px 10px' }}>Clear chat</Btn>
-      </div>
-
-      <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10, paddingBottom: 12 }}>
+      <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 12, paddingBottom: 8 }}>
         {state.aiHistory.length === 0 && (
-          <div>
-            <Card style={{ textAlign: 'center', marginBottom: 14 }}>
-              <div style={{ fontSize: 32, marginBottom: 8 }}>🤖</div>
-              <div style={{ fontWeight: 600, marginBottom: 4 }}>Your Study Assistant</div>
-              <div style={{ color: C.muted, fontSize: 13 }}>Ask me anything about your units, assignments, or study strategies. I know your current units and progress.</div>
-            </Card>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              {suggestions.map(s => (
-                <button key={s} onClick={() => setInput(s)} style={{
-                  background: C.surface, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8,
-                  padding: '10px 12px', fontSize: 12, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', lineHeight: 1.4
-                }}>{s}</button>
+          <div style={{ textAlign: 'center', padding: 40 }}>
+            <div style={{ fontSize: 40, marginBottom: 12 }}>🤖</div>
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>AI Study Assistant</div>
+            <div style={{ fontSize: 13, color: C.muted, marginBottom: 20 }}>Ask anything about your studies, assignments, or career.</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center' }}>
+              {['Explain hypothesis testing','SQL joins for interviews','Help revise for Data Structures','Python pandas practice Qs','Internship CV tips Kenya'].map(s => (
+                <button key={s} onClick={() => setInput(s)} style={{ background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 20, padding: '6px 14px', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}>{s}</button>
               ))}
             </div>
           </div>
         )}
-
         {state.aiHistory.map((msg, i) => (
           <div key={i} style={{ display: 'flex', justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
-            <div style={{
-              maxWidth: '80%', padding: '10px 14px', borderRadius: 10, fontSize: 13, lineHeight: 1.7,
-              background: msg.role === 'user' ? C.accent : C.surface,
-              color: msg.role === 'user' ? '#000' : C.text,
-              border: msg.role === 'assistant' ? `1px solid ${C.border}` : 'none',
-              whiteSpace: 'pre-wrap',
-            }}>{msg.content}</div>
-          </div>
-        ))}
-        {loading && (
-          <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
-            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: '10px 14px', fontSize: 13, color: C.muted }}>
-              Thinking...
+            <div style={{ maxWidth: '80%', background: msg.role === 'user' ? C.accent : C.surface2, color: msg.role === 'user' ? '#000' : C.text, borderRadius: 12, padding: '10px 14px', fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+              {msg.content}
             </div>
           </div>
-        )}
+        ))}
+        {loading && <div style={{ display: 'flex', justifyContent: 'flex-start' }}><div style={{ background: C.surface2, borderRadius: 12, padding: '10px 14px', fontSize: 13, color: C.muted }}>Thinking…</div></div>}
         <div ref={bottomRef} />
       </div>
-
-      <div style={{ display: 'flex', gap: 10, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
-        <textarea value={input} onChange={e => setInput(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
-          placeholder="Ask anything… (Enter to send, Shift+Enter for new line)"
-          style={{ flex: 1, background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: '10px 12px', fontSize: 13, resize: 'none', minHeight: 50, maxHeight: 120, fontFamily: 'inherit' }} />
+      <div style={{ display: 'flex', gap: 8, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
+        <textarea value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }} placeholder="Ask anything… (Enter to send)" rows={2}
+          style={{ flex: 1, background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: '10px 12px', fontSize: 13, resize: 'none', fontFamily: 'inherit' }} />
         <Btn onClick={send} disabled={loading || !input.trim()} style={{ alignSelf: 'flex-end', padding: '10px 20px' }}>Send</Btn>
+        <button onClick={() => dispatch({ type: 'clearAI' })} style={{ background: 'none', border: `1px solid ${C.border}`, color: C.muted, borderRadius: 8, padding: '10px 12px', fontSize: 12, cursor: 'pointer', alignSelf: 'flex-end', fontFamily: 'inherit' }}>Clear</button>
       </div>
     </div>
   );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// EXISTING TABS (holiday tasks, calendar, timer, diary, reminders, resources, achievements)
+// TASKS TAB
 // ══════════════════════════════════════════════════════════════════════════════
 function TasksTab({ state, toggle }) {
-  const [filterWeek, setFilterWeek] = useState('all');
-  const [filterTrack, setFilterTrack] = useState('all');
-  const filtered = TASKS.filter(t => (filterWeek === 'all' || t.week === +filterWeek) && (filterTrack === 'all' || t.track === filterTrack));
-  const sel = { background: C.surface2, color: C.text, border: `1px solid ${C.border}`, borderRadius: 6, padding: '6px 10px', fontSize: 13 };
+  const [filter, setFilter] = useState('all');
+  const weeks = [...new Set(TASKS.map(t => t.week))];
   return (
     <div>
-      <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
-        <select style={sel} value={filterWeek} onChange={e => setFilterWeek(e.target.value)}>
-          <option value="all">All Weeks</option>
-          {[1,2,3,4,5,6,7,8].map(w => <option key={w} value={w}>Week {w}</option>)}
-        </select>
-        <select style={sel} value={filterTrack} onChange={e => setFilterTrack(e.target.value)}>
-          <option value="all">All Tracks</option>
-          {TRACKS.map(t => <option key={t.id} value={t.id}>{t.emoji} {t.label}</option>)}
-        </select>
-        <span style={{ marginLeft: 'auto', color: C.muted, fontSize: 13, alignSelf: 'center' }}>{filtered.filter(t => state.checked[t.id]).length}/{filtered.length} done</span>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+        {[['all','All'], ...TRACKS.map(t => [t.id, `${t.emoji} ${t.label}`])].map(([id, label]) => (
+          <button key={id} onClick={() => setFilter(id)} style={{ background: filter === id ? C.accent : C.surface2, color: filter === id ? '#000' : C.text, border: `1px solid ${filter === id ? C.accent : C.border}`, borderRadius: 20, padding: '5px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>{label}</button>
+        ))}
       </div>
-      {[1,2,3,4,5,6,7,8].map(w => {
-        const wTasks = filtered.filter(t => t.week === w);
-        if (!wTasks.length) return null;
-        const wDone = wTasks.filter(t => state.checked[t.id]).length;
+      {weeks.map(week => {
+        const tasks = TASKS.filter(t => t.week === week && (filter === 'all' || t.track === filter));
+        if (!tasks.length) return null;
+        const done = tasks.filter(t => state.checked[t.id]).length;
         return (
-          <div key={w} style={{ marginBottom: 20 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
-              <span style={{ fontWeight: 700, color: C.accent, fontFamily: 'Space Grotesk' }}>Week {w}</span>
-              <div style={{ flex: 1 }}><ProgressBar value={wDone} max={wTasks.length} /></div>
-              <span style={{ fontSize: 12, color: C.muted }}>{wDone}/{wTasks.length}</span>
+          <div key={week} style={{ marginBottom: 20 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+              <div style={{ fontWeight: 700, fontSize: 13, color: C.accent }}>Week {week}</div>
+              <div style={{ flex: 1, height: 1, background: C.border }} />
+              <Badge label={`${done}/${tasks.length}`} color={done === tasks.length ? C.green : C.amber} />
             </div>
-            <Card style={{ padding: 0, overflow: 'hidden' }}>
-              {wTasks.map((t, i) => {
-                const tr = TRACKS.find(x => x.id === t.track);
-                const done = !!state.checked[t.id];
-                return (
-                  <div key={t.id} onClick={() => toggle(t.id, t.xp, t.title)} style={{
-                    display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px',
-                    borderBottom: i < wTasks.length - 1 ? `1px solid ${C.border}` : 'none',
-                    cursor: 'pointer', background: done ? 'rgba(63,185,80,0.05)' : 'transparent',
-                  }}>
-                    <div style={{ width: 22, height: 22, borderRadius: 6, border: `2px solid ${done ? C.green : C.border}`, background: done ? C.green : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                      {done && <span style={{ color: '#000', fontSize: 13, fontWeight: 700 }}>✓</span>}
-                    </div>
-                    <span style={{ flex: 1, fontSize: 14, textDecoration: done ? 'line-through' : 'none', color: done ? C.muted : C.text }}>{t.title}</span>
-                    <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-                      <Badge label={tr?.emoji + ' ' + tr?.label} color={tr?.color} />
-                      <Badge label={`+${t.xp}xp`} color={C.amber} />
-                      {t.link && <a href={t.link} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} style={{ color: C.accent, fontSize: 13 }}>↗</a>}
+            {tasks.map(task => {
+              const track = TRACKS.find(t => t.id === task.track);
+              const checked = !!state.checked[task.id];
+              return (
+                <div key={task.id} onClick={() => toggle(task.id, task.xp, task.title)} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', background: checked ? C.surface : C.surface2, borderRadius: 8, marginBottom: 6, cursor: 'pointer', border: `1px solid ${checked ? C.green + '44' : C.border}`, opacity: checked ? 0.75 : 1, transition: 'all .15s' }}>
+                  <div style={{ width: 20, height: 20, borderRadius: 5, border: `2px solid ${checked ? C.green : C.border}`, background: checked ? C.green : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 12, color: '#000' }}>{checked ? '✓' : ''}</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, textDecoration: checked ? 'line-through' : 'none', color: checked ? C.muted : C.text }}>{task.title}</div>
+                    <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                      <Badge label={`${track?.emoji} ${track?.label}`} color={track?.color} />
+                      <Badge label={`+${task.xp} XP`} color={C.amber} />
                     </div>
                   </div>
-                );
-              })}
-            </Card>
+                  {task.link && <a href={task.link} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ color: C.accent, fontSize: 12, textDecoration: 'none' }}>↗</a>}
+                </div>
+              );
+            })}
           </div>
         );
       })}
@@ -1146,18 +1474,22 @@ function TasksTab({ state, toggle }) {
   );
 }
 
-const MODES = [
-  { id: 'work', label: '🍅 Focus', mins: 90 },
-  { id: 'short', label: '☕ Short Break', mins: 25 },
-  { id: 'long', label: '🌿 Long Break', mins: 50 },
-  { id: 'deep', label: '🧠 Deep Work', mins: 180 },
-];
-function FocusTimer({ dispatch }) {
+// ══════════════════════════════════════════════════════════════════════════════
+// FOCUS TIMER (uses prefs for durations)
+// ══════════════════════════════════════════════════════════════════════════════
+function FocusTimer({ dispatch, prefs }) {
+  const modes = [
+    { id: 'work',  label: '🍅 Focus',      mins: prefs?.timerWork  || 90 },
+    { id: 'short', label: '☕ Short Break', mins: prefs?.timerShort || 25 },
+    { id: 'long',  label: '🌿 Long Break',  mins: prefs?.timerLong  || 50 },
+    { id: 'deep',  label: '🧠 Deep Work',   mins: prefs?.timerDeep  || 180 },
+  ];
   const [modeIdx, setModeIdx] = useState(0);
-  const [secs, setSecs] = useState(MODES[0].mins * 60);
+  const [secs, setSecs] = useState(modes[0].mins * 60);
   const [running, setRunning] = useState(false);
   const intervalRef = useRef(null);
-  const mode = MODES[modeIdx];
+  const mode = modes[modeIdx];
+
   useEffect(() => { setSecs(mode.mins * 60); setRunning(false); clearInterval(intervalRef.current); }, [modeIdx]);
   useEffect(() => {
     if (running) {
@@ -1167,7 +1499,7 @@ function FocusTimer({ dispatch }) {
             clearInterval(intervalRef.current); setRunning(false);
             dispatch({ type: 'focusDone', minutes: mode.mins, mode: mode.label });
             if ('Notification' in window && Notification.permission === 'granted')
-              new Notification('🍅 Session Complete!', { body: `${mode.label} done. +10 XP earned!` });
+              new Notification('✅ Session Complete!', { body: `${mode.label} done. +10 XP!` });
             return 0;
           }
           return s - 1;
@@ -1176,14 +1508,20 @@ function FocusTimer({ dispatch }) {
     } else clearInterval(intervalRef.current);
     return () => clearInterval(intervalRef.current);
   }, [running]);
-  const fmt = s => `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
+
+  const fmt = s => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
   const r = 80; const circ = 2 * Math.PI * r;
   const dash = circ - (((mode.mins * 60 - secs) / (mode.mins * 60)) * circ);
+
   return (
     <div style={{ maxWidth: 500, margin: '0 auto' }}>
       <Card style={{ textAlign: 'center' }}>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginBottom: 24, flexWrap: 'wrap' }}>
-          {MODES.map((m, i) => <button key={m.id} onClick={() => setModeIdx(i)} style={{ background: i === modeIdx ? C.accent : C.surface2, color: i === modeIdx ? '#000' : C.text, border: `1px solid ${C.border}`, borderRadius: 20, padding: '6px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>{m.label}</button>)}
+          {modes.map((m, i) => (
+            <button key={m.id} onClick={() => setModeIdx(i)} style={{ background: i === modeIdx ? C.accent : C.surface2, color: i === modeIdx ? '#000' : C.text, border: `1px solid ${C.border}`, borderRadius: 20, padding: '6px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+              {m.label} <span style={{ fontSize: 11, opacity: 0.8 }}>{m.mins}m</span>
+            </button>
+          ))}
         </div>
         <div style={{ position: 'relative', display: 'inline-block', marginBottom: 24 }}>
           <svg width={200} height={200} viewBox="0 0 200 200">
@@ -1199,13 +1537,17 @@ function FocusTimer({ dispatch }) {
           <Btn onClick={() => setRunning(r => !r)} color={running ? C.red : C.green} style={{ padding: '10px 32px', fontSize: 15 }}>{running ? 'Pause' : 'Start'}</Btn>
           <Btn onClick={() => { setSecs(mode.mins * 60); setRunning(false); }} outline style={{ padding: '10px 20px', fontSize: 15 }}>Reset</Btn>
         </div>
-        <div style={{ marginTop: 14, fontSize: 12, color: C.amber }}>⭐ Each completed session earns +10 XP automatically</div>
-        <button onClick={() => 'Notification' in window && Notification.requestPermission()} style={{ marginTop: 10, background: 'transparent', color: C.muted, border: 'none', fontSize: 12, textDecoration: 'underline', cursor: 'pointer' }}>Enable notifications</button>
+        <div style={{ marginTop: 14, fontSize: 12, color: C.amber }}>⭐ Each completed session earns +10 XP</div>
+        <div style={{ marginTop: 6, fontSize: 12, color: C.muted }}>Customise durations in Settings → Timer</div>
+        <button onClick={() => 'Notification' in window && Notification.requestPermission()} style={{ marginTop: 8, background: 'transparent', color: C.muted, border: 'none', fontSize: 12, textDecoration: 'underline', cursor: 'pointer' }}>Enable notifications</button>
       </Card>
     </div>
   );
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// CALENDAR, DIARY, REMINDERS, XP LOG (unchanged from original, wired)
+// ══════════════════════════════════════════════════════════════════════════════
 function CalendarTab({ state, dispatch }) {
   const [month, setMonth] = useState(() => { const d = new Date(); return { y: d.getFullYear(), m: d.getMonth() }; });
   const [selected, setSelected] = useState(today());
@@ -1213,25 +1555,25 @@ function CalendarTab({ state, dispatch }) {
   const firstDay = new Date(month.y, month.m, 1).getDay();
   const daysInMonth = new Date(month.y, month.m + 1, 0).getDate();
   const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-  const dayKey = d => `${month.y}-${String(month.m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  const dayKey = d => `${month.y}-${String(month.m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 16 }}>
       <Card>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-          <button onClick={() => setMonth(p => { const d = new Date(p.y, p.m-1); return {y:d.getFullYear(),m:d.getMonth()}; })} style={{ background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: '4px 10px', fontSize: 16, cursor: 'pointer' }}>‹</button>
+          <button onClick={() => setMonth(p => { const d = new Date(p.y, p.m - 1); return { y: d.getFullYear(), m: d.getMonth() }; })} style={{ background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: '4px 10px', fontSize: 16, cursor: 'pointer' }}>‹</button>
           <span style={{ fontFamily: 'Space Grotesk', fontWeight: 700, fontSize: 18 }}>{MONTHS[month.m]} {month.y}</span>
-          <button onClick={() => setMonth(p => { const d = new Date(p.y, p.m+1); return {y:d.getFullYear(),m:d.getMonth()}; })} style={{ background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: '4px 10px', fontSize: 16, cursor: 'pointer' }}>›</button>
+          <button onClick={() => setMonth(p => { const d = new Date(p.y, p.m + 1); return { y: d.getFullYear(), m: d.getMonth() }; })} style={{ background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: '4px 10px', fontSize: 16, cursor: 'pointer' }}>›</button>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)', gap: 4, marginBottom: 8 }}>
           {['Su','Mo','Tu','We','Th','Fr','Sa'].map(d => <div key={d} style={{ textAlign: 'center', fontSize: 12, color: C.muted, fontWeight: 600 }}>{d}</div>)}
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)', gap: 4 }}>
-          {Array(firstDay).fill(null).map((_,i) => <div key={`e${i}`} />)}
-          {Array(daysInMonth).fill(null).map((_,i) => {
-            const d = i+1; const key = dayKey(d); const isToday = key === today(); const isSel = key === selected;
+          {Array(firstDay).fill(null).map((_, i) => <div key={`e${i}`} />)}
+          {Array(daysInMonth).fill(null).map((_, i) => {
+            const d = i + 1; const key = dayKey(d); const isToday = key === today(); const isSel = key === selected;
             const hasFocus = state.focusSessions.some(s => s.date === key);
             const hasNote = !!state.calNotes[key];
-            const hasDeadline = state.units.some(u => [...(u.assignments||[]),...(u.cats||[]),...(u.exams||[])].some(item => (item.due || item.date) === key));
+            const hasDeadline = state.units.some(u => [...(u.assignments || []), ...(u.cats || []), ...(u.exams || [])].some(item => (item.due || item.date) === key));
             return <div key={d} onClick={() => setSelected(key)} style={{ aspectRatio: '1', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', borderRadius: 8, cursor: 'pointer', background: isSel ? C.accent : isToday ? 'rgba(88,166,255,0.15)' : C.surface2, border: `2px solid ${isToday ? C.accent : 'transparent'}`, color: isSel ? '#000' : C.text, fontWeight: isToday ? 700 : 400, fontSize: 13 }}>
               {d}
               <div style={{ display: 'flex', gap: 2, marginTop: 2 }}>
@@ -1249,16 +1591,16 @@ function CalendarTab({ state, dispatch }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         <Card>
           <div style={{ fontWeight: 600, marginBottom: 8 }}>📅 {selected}</div>
-          {state.focusSessions.filter(s => s.date === selected).map((s,i) => <div key={i} style={{ fontSize: 13, color: C.purple, marginBottom: 4 }}>⏱ {s.minutes}min – {s.mode}</div>)}
+          {state.focusSessions.filter(s => s.date === selected).map((s, i) => <div key={i} style={{ fontSize: 13, color: C.purple, marginBottom: 4 }}>⏱ {s.minutes}min – {s.mode}</div>)}
           {state.units.map(u => {
-            const items = [...(u.assignments||[]).filter(a=>(a.due||'')===selected), ...(u.cats||[]).filter(c=>(c.date||'')===selected), ...(u.exams||[]).filter(e=>(e.date||'')===selected)];
+            const items = [...(u.assignments || []).filter(a => (a.due || '') === selected), ...(u.cats || []).filter(c => (c.date || '') === selected), ...(u.exams || []).filter(e => (e.date || '') === selected)];
             return items.map(item => <div key={item.id} style={{ fontSize: 12, color: C.red, marginBottom: 2 }}>📌 {u.code}: {item.title}</div>);
           })}
           {state.calNotes[selected] && <div style={{ fontSize: 13, color: C.muted, marginTop: 6, whiteSpace: 'pre-wrap' }}>{state.calNotes[selected]}</div>}
         </Card>
         <Card>
           <div style={{ fontWeight: 600, marginBottom: 8 }}>Add note</div>
-          <textarea value={noteText} onChange={e => setNoteText(e.target.value)} placeholder="What happened today?" style={{ width: '100%', background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: 10, fontSize: 13, resize: 'vertical', minHeight: 70, fontFamily: 'inherit' }} />
+          <textarea value={noteText} onChange={e => setNoteText(e.target.value)} placeholder="What happened today?" style={{ width: '100%', background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: 10, fontSize: 13, resize: 'vertical', minHeight: 70, fontFamily: 'inherit', boxSizing: 'border-box' }} />
           <Btn onClick={() => { dispatch({ type: 'calNote', date: selected, text: noteText }); setNoteText(''); }} style={{ marginTop: 8, width: '100%' }}>Save</Btn>
         </Card>
       </div>
@@ -1268,29 +1610,29 @@ function CalendarTab({ state, dispatch }) {
 
 function DiaryTab({ state, dispatch }) {
   const [text, setText] = useState('');
-  const entries = Object.entries(state.diary).sort((a,b) => b[0].localeCompare(a[0]));
+  const entries = Object.entries(state.diary).sort((a, b) => b[0].localeCompare(a[0]));
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 16 }}>
       <div>
         <Card style={{ marginBottom: 14 }}>
-          <div style={{ fontWeight: 600, marginBottom: 10 }}>📝 Today's reflection – {today()}</div>
+          <div style={{ fontWeight: 600, marginBottom: 10 }}>📝 Today – {today()}</div>
           <textarea value={text} onChange={e => setText(e.target.value)} placeholder="What did you learn? What challenged you? What are you proud of?"
-            style={{ width: '100%', background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: 12, fontSize: 14, resize: 'vertical', minHeight: 100, fontFamily: 'inherit' }} />
+            style={{ width: '100%', background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: 12, fontSize: 14, resize: 'vertical', minHeight: 100, fontFamily: 'inherit', boxSizing: 'border-box' }} />
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
             <span style={{ fontSize: 12, color: C.amber }}>⭐ +5 XP for each entry</span>
             <Btn onClick={() => { if (text.trim()) { dispatch({ type: 'diary', date: today(), text: text.trim() }); setText(''); } }}>Save Entry</Btn>
           </div>
         </Card>
-        {entries.map(([date, text]) => (
+        {entries.map(([date, txt]) => (
           <Card key={date} style={{ marginBottom: 10 }}>
             <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>{date}</div>
-            <p style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap', margin: 0 }}>{text}</p>
+            <p style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap', margin: 0 }}>{txt}</p>
           </Card>
         ))}
       </div>
       <Card>
-        <div style={{ fontWeight: 600, marginBottom: 10 }}>💡 OneNote link</div>
-        <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.7, margin: 0 }}>Write quick reflections here, then expand in OneNote with mind maps, code snippets, and diagrams.<br /><br />Use the timetable export to paste your schedule into OneNote's timetable page.</p>
+        <div style={{ fontWeight: 600, marginBottom: 10 }}>💡 Quick tip</div>
+        <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.7, margin: 0 }}>Daily reflections build a learning habit. Each entry earns XP and gives you a searchable record of your progress.<br /><br />Try writing at least one thing you learned, one challenge, and one thing to try tomorrow.</p>
       </Card>
     </div>
   );
@@ -1298,87 +1640,39 @@ function DiaryTab({ state, dispatch }) {
 
 function RemindersTab({ state, dispatch }) {
   const [form, setForm] = useState({ title: '', date: '', time: '', type: 'study' });
-  const sorted = [...state.reminders].sort((a,b) => a.date.localeCompare(b.date));
+  const sorted = [...state.reminders].sort((a, b) => a.date.localeCompare(b.date));
   const now = new Date();
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
       <Card>
         <div style={{ fontWeight: 600, marginBottom: 14 }}>➕ Add Reminder</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <Input value={form.title} onChange={v => setForm(f => ({...f, title: v}))} placeholder="What to remember..." />
+          <Input value={form.title} onChange={v => setForm(f => ({ ...f, title: v }))} placeholder="What to remember..." />
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <Input type="date" value={form.date} onChange={v => setForm(f => ({...f, date: v}))} />
-            <Input type="time" value={form.time} onChange={v => setForm(f => ({...f, time: v}))} />
+            <Input type="date" value={form.date} onChange={v => setForm(f => ({ ...f, date: v }))} />
+            <Input type="time" value={form.time} onChange={v => setForm(f => ({ ...f, time: v }))} />
           </div>
-          <Select value={form.type} onChange={v => setForm(f => ({...f, type: v}))}>
+          <Select value={form.type} onChange={v => setForm(f => ({ ...f, type: v }))}>
             {['study','assignment','cat','exam','apply','review','other'].map(t => <option key={t}>{t}</option>)}
           </Select>
-          <Btn onClick={() => { if (!form.title || !form.date) return; dispatch({ type: 'addReminder', reminder: {...form, id: Date.now()} }); setForm({title:'',date:'',time:'',type:'study'}); }}>Set Reminder</Btn>
+          <Btn onClick={() => { if (!form.title || !form.date) return; dispatch({ type: 'addReminder', reminder: { ...form, id: Date.now() } }); setForm({ title: '', date: '', time: '', type: 'study' }); }}>Set Reminder</Btn>
         </div>
       </Card>
       <Card>
         <div style={{ fontWeight: 600, marginBottom: 14 }}>🔔 All Reminders</div>
         {sorted.length === 0 && <p style={{ color: C.muted, fontSize: 13 }}>No reminders yet.</p>}
         {sorted.map(r => {
-          const dt = new Date(`${r.date}T${r.time||'23:59'}`); const overdue = dt < now;
+          const dt = new Date(`${r.date}T${r.time || '23:59'}`); const overdue = dt < now;
           return <div key={r.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '9px 0', borderBottom: `1px solid ${C.border}`, opacity: overdue ? 0.6 : 1 }}>
-            <span style={{ fontSize: 18 }}>{r.type==='exam'?'📚':r.type==='cat'?'📝':r.type==='assignment'?'📋':r.type==='study'?'📖':'📌'}</span>
+            <span style={{ fontSize: 18 }}>{r.type === 'exam' ? '📚' : r.type === 'cat' ? '📝' : r.type === 'assignment' ? '📋' : '📌'}</span>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 13, fontWeight: 500 }}>{r.title}</div>
-              <div style={{ fontSize: 11, color: overdue ? C.red : C.muted }}>{overdue?'⚠ Overdue – ':''}{r.date}{r.time?' at '+r.time:''}</div>
+              <div style={{ fontSize: 11, color: overdue ? C.red : C.muted }}>{overdue ? '⚠ Overdue – ' : ''}{r.date}{r.time ? ' at ' + r.time : ''}</div>
             </div>
             <button onClick={() => dispatch({ type: 'removeReminder', id: r.id })} style={{ background: 'none', border: 'none', color: C.muted, fontSize: 16, cursor: 'pointer' }}>✕</button>
           </div>;
         })}
       </Card>
-    </div>
-  );
-}
-
-function ResourcesTab() {
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(280px,1fr))', gap: 16 }}>
-      {RESOURCES.map(cat => (
-        <Card key={cat.category}>
-          <div style={{ fontWeight: 700, marginBottom: 12, color: C.accent }}>{cat.category}</div>
-          {cat.items.map(item => (
-            <a key={item.name} href={item.url} target="_blank" rel="noopener noreferrer"
-              style={{ display: 'block', color: C.text, textDecoration: 'none', fontSize: 13, padding: '6px 0', borderBottom: `1px solid ${C.border}` }}>↗ {item.name}</a>
-          ))}
-        </Card>
-      ))}
-    </div>
-  );
-}
-
-function AchievementsTab({ state }) {
-  const doneTasks = Object.values(state.checked).filter(Boolean).length;
-  const dataDone = TASKS.filter(t => t.track==='data' && state.checked[t.id]).length;
-  const webDone = TASKS.filter(t => t.track==='web' && state.checked[t.id]).length;
-  const softDone = TASKS.filter(t => t.track==='soft' && state.checked[t.id]).length;
-  const internDone = TASKS.filter(t => t.track==='intern' && state.checked[t.id]).length;
-  const week1Done = TASKS.filter(t=>t.week===1).every(t=>state.checked[t.id]);
-  const capstone = !!state.checked['t31'];
-  const allCats = state.units.flatMap(u => u.cats || []);
-  const catsPassed = allCats.filter(c => c.score && parseFloat(c.score)/(c.outOf||30)*100 >= 60).length;
-  const allScores = [...state.units.flatMap(u=>(u.assignments||[]).map(a=>a.grade?parseFloat(a.grade)/(a.outOf||100)*100:0)), ...allCats.map(c=>c.score?parseFloat(c.score)/(c.outOf||30)*100:0)];
-  const topScore = allScores.some(s => s >= 80);
-  const d = { done: doneTasks, xp: state.xp, dataDone, webDone, softDone, internDone, week1Done, capstone, streak: state.streak, units: state.units.length, catsPassed, topScore, totalSessions: state.focusSessions.length, aiQuestions: state.aiQuestions || 0 };
-  const unlocked = ACHIEVEMENTS.filter(a => a.condition(d)).length;
-  return (
-    <div>
-      <div style={{ marginBottom: 16, color: C.muted, fontSize: 13 }}>{unlocked}/{ACHIEVEMENTS.length} achievements unlocked</div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: 12 }}>
-        {ACHIEVEMENTS.map(a => {
-          const ok = a.condition(d);
-          return <Card key={a.id} style={{ textAlign: 'center', opacity: ok ? 1 : 0.4 }}>
-            <div style={{ fontSize: 34, marginBottom: 6 }}>{a.icon}</div>
-            <div style={{ fontWeight: 700, marginBottom: 4, color: ok ? C.text : C.muted }}>{a.title}</div>
-            <div style={{ fontSize: 12, color: C.muted }}>{a.desc}</div>
-            {ok && <div style={{ marginTop: 8 }}><Badge label="Unlocked ✓" color={C.green} /></div>}
-          </Card>;
-        })}
-      </div>
     </div>
   );
 }
@@ -1393,25 +1687,22 @@ function XPLogTab({ state }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16 }}>
       <Card>
-        <div style={{ fontWeight: 600, marginBottom: 14 }}>📜 XP History (last 200 events)</div>
-        {log.length === 0 && <div style={{ color: C.muted, fontSize: 13 }}>No XP earned yet — complete tasks, focus sessions, or diary entries.</div>}
+        <div style={{ fontWeight: 600, marginBottom: 14 }}>📜 XP History (last 200)</div>
+        {log.length === 0 && <div style={{ color: C.muted, fontSize: 13 }}>No XP yet — complete tasks, focus sessions, or diary entries.</div>}
         {log.map((e, i) => (
           <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderBottom: `1px solid ${C.border}`, fontSize: 13 }}>
-            <div>
-              <span>{e.reason}</span>
-              <span style={{ fontSize: 11, color: C.muted, marginLeft: 10 }}>{e.date}</span>
-            </div>
+            <div><span>{e.reason}</span><span style={{ fontSize: 11, color: C.muted, marginLeft: 10 }}>{e.date}</span></div>
             <span style={{ color: C.amber, fontWeight: 600, flexShrink: 0 }}>+{e.amount} XP</span>
           </div>
         ))}
       </Card>
       <div>
         <Card style={{ marginBottom: 14 }}>
-          <div style={{ fontWeight: 600, marginBottom: 12 }}>⭐ Total XP: {state.xp}</div>
-          {Object.entries(byCategory).sort((a,b)=>b[1]-a[1]).map(([cat, xp]) => (
+          <div style={{ fontWeight: 600, marginBottom: 12 }}>⭐ Total: {state.xp} XP</div>
+          {Object.entries(byCategory).sort((a, b) => b[1] - a[1]).map(([cat, xp]) => (
             <div key={cat} style={{ marginBottom: 10 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
-                <span>{cat}</span><span style={{ color: C.amber }}>{xp} XP</span>
+                <span>{cat}</span><span style={{ color: C.amber }}>{xp}</span>
               </div>
               <ProgressBar value={xp} max={state.xp} color={C.amber} />
             </div>
@@ -1419,20 +1710,7 @@ function XPLogTab({ state }) {
         </Card>
         <Card>
           <div style={{ fontWeight: 600, marginBottom: 10 }}>📖 XP Rules</div>
-          {[
-            ['Holiday task', 'varies'],
-            ['Focus session', '+10'],
-            ['Diary entry', '+5'],
-            ['Assignment submit', '+30'],
-            ['Assignment grade A (70%+)', '+50'],
-            ['Assignment grade B (60–69%)', '+35'],
-            ['Assignment grade C (<60%)', '+20'],
-            ['CAT pass (50%+)', '+40'],
-            ['CAT distinction (70%+)', '+70'],
-            ['Exam pass (40%+)', '+80'],
-            ['Exam distinction (70%+)', '+120'],
-            ['Topic mastered', '+25'],
-          ].map(([label, val]) => (
+          {[['Holiday task','varies'],['Focus session','+10'],['Diary entry','+5'],['Assignment submit','+30'],['Grade A','+50'],['Grade B','+35'],['CAT pass','+40'],['CAT distinction','+70'],['Exam pass','+80'],['Exam distinction','+120'],['Topic mastered','+25'],['Semester complete','+150'],['Year complete','+300']].map(([label, val]) => (
             <div key={label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '4px 0', borderBottom: `1px solid ${C.border}`, color: C.muted }}>
               <span>{label}</span><span style={{ color: C.amber }}>{val}</span>
             </div>
@@ -1447,30 +1725,36 @@ function XPLogTab({ state }) {
 // ROOT APP
 // ══════════════════════════════════════════════════════════════════════════════
 const TABS = [
-  { id: 'dashboard',  label: '🏠 Dashboard',      group: 'general' },
-  { id: 'xplog',      label: '⭐ XP & Progress',   group: 'general' },
-  { id: 'units',      label: '🎓 Semester Units',   group: 'semester' },
-  { id: 'timetable',  label: '🗓️ Timetable',        group: 'semester' },
-  { id: 'ai',         label: '🤖 AI Assistant',     group: 'semester' },
-  { id: 'tasks',      label: '✅ Holiday Tasks',    group: 'holiday' },
-  { id: 'calendar',   label: '📅 Calendar',         group: 'holiday' },
-  { id: 'timer',      label: '⏱ Focus Timer',       group: 'holiday' },
-  { id: 'diary',      label: '📝 Diary',            group: 'holiday' },
-  { id: 'reminders',  label: '🔔 Reminders',        group: 'holiday' },
-  { id: 'resources',  label: '📚 Resources',        group: 'holiday' },
-  { id: 'achieve',    label: '🏆 Achievements',     group: 'general' },
+  { id: 'dashboard', label: '🏠 Dashboard',      group: 'general' },
+  { id: 'xplog',     label: '⭐ XP & Progress',   group: 'general' },
+  { id: 'achieve',   label: '🏆 Achievements',     group: 'general' },
+  { id: 'units',     label: '🎓 Semester Units',   group: 'semester' },
+  { id: 'timetable', label: '🗓️ Timetable',        group: 'semester' },
+  { id: 'ai',        label: '🤖 AI Assistant',     group: 'semester' },
+  { id: 'tasks',     label: '✅ Holiday Tasks',    group: 'holiday' },
+  { id: 'calendar',  label: '📅 Calendar',         group: 'holiday' },
+  { id: 'timer',     label: '⏱ Focus Timer',       group: 'holiday' },
+  { id: 'diary',     label: '📝 Diary',            group: 'holiday' },
+  { id: 'reminders', label: '🔔 Reminders',        group: 'holiday' },
+  { id: 'resources', label: '📚 Resources',        group: 'holiday' },
+  { id: 'settings',  label: '⚙️ Settings',          group: 'general' },
 ];
 
-function AppInner() {
+function AppInner({ user }) {
   const [tab, setTab] = useState('dashboard');
   const [state, dispatch] = useReducer(reducer, null, initState);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+
+  const prefs = state.prefs || DEFAULT_PREFS;
+
+  // Apply theme whenever prefs change
+  useEffect(() => { applyTheme(prefs); }, [prefs]);
 
   useEffect(() => {
     const t = today();
     if (state.lastVisit !== t) {
       const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
-      const yKey = yesterday.toISOString().slice(0,10);
+      const yKey = yesterday.toISOString().slice(0, 10);
       const newStreak = state.lastVisit === yKey ? state.streak + 1 : 1;
       const next = { ...state, lastVisit: t, streak: newStreak };
       save(next);
@@ -1481,7 +1765,7 @@ function AppInner() {
     const id = setInterval(() => {
       const now = new Date();
       state.reminders.forEach(r => {
-        const dt = new Date(`${r.date}T${r.time||'09:00'}`);
+        const dt = new Date(`${r.date}T${r.time || '09:00'}`);
         if (Math.abs(now - dt) / 1000 < 35 && 'Notification' in window && Notification.permission === 'granted')
           new Notification('⏰ ' + r.title, { body: r.type });
       });
@@ -1492,18 +1776,20 @@ function AppInner() {
   const toggle = useCallback((id, xp, title) => dispatch({ type: 'toggle', id, xp, title }), []);
 
   const groups = [
-    { id: 'general', label: 'Overview' },
+    { id: 'general',  label: 'Overview' },
     { id: 'semester', label: 'Semester' },
-    { id: 'holiday', label: 'Holiday' },
+    { id: 'holiday',  label: 'Holiday' },
   ];
 
+  const displayName = prefs.displayName || user?.displayName?.split(' ')[0] || 'You';
+
   return (
-    <div style={{ display: 'flex', minHeight: '100vh' }}>
+    <div style={{ display: 'flex', minHeight: '100vh', background: C.bg, color: C.text, fontFamily: FONTS[prefs.font] || FONTS.system, fontSize: prefs.fontSize || 14 }}>
       {/* sidebar */}
       <div style={{ width: sidebarOpen ? 220 : 56, flexShrink: 0, background: C.surface, borderRight: `1px solid ${C.border}`, transition: 'width .2s', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <div style={{ padding: '16px 12px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 20, flexShrink: 0 }}>🗺️</span>
-          {sidebarOpen && <span style={{ fontFamily: 'Space Grotesk', fontWeight: 700, fontSize: 14, whiteSpace: 'nowrap' }}>GitAway Tracker</span>}
+          <span style={{ fontSize: 20, flexShrink: 0 }}>{prefs.avatarEmoji || '🗺️'}</span>
+          {sidebarOpen && <span style={{ fontFamily: 'Space Grotesk', fontWeight: 700, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{displayName}</span>}
           <button onClick={() => setSidebarOpen(o => !o)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: C.muted, fontSize: 18, cursor: 'pointer', flexShrink: 0 }}>{sidebarOpen ? '◂' : '▸'}</button>
         </div>
         <nav style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
@@ -1511,7 +1797,7 @@ function AppInner() {
             <div key={g.id}>
               {sidebarOpen && <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: '.08em', textTransform: 'uppercase', padding: '10px 14px 4px' }}>{g.label}</div>}
               {TABS.filter(t => t.group === g.id).map(t => (
-                <button key={t.id} onClick={() => setTab(t.id)} style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%', padding: '9px 14px', background: tab === t.id ? 'rgba(88,166,255,0.12)' : 'none', border: 'none', borderLeft: `3px solid ${tab === t.id ? C.accent : 'transparent'}`, color: tab === t.id ? C.accent : C.text, textAlign: 'left', fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                <button key={t.id} onClick={() => setTab(t.id)} style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%', padding: '9px 14px', background: tab === t.id ? (prefs.accentColor || C.accent) + '18' : 'none', border: 'none', borderLeft: `3px solid ${tab === t.id ? (prefs.accentColor || C.accent) : 'transparent'}`, color: tab === t.id ? (prefs.accentColor || C.accent) : C.text, textAlign: 'left', fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap', fontFamily: 'inherit' }}>
                   <span style={{ fontSize: 16, flexShrink: 0 }}>{t.label.split(' ')[0]}</span>
                   {sidebarOpen && <span>{t.label.split(' ').slice(1).join(' ')}</span>}
                 </button>
@@ -1536,89 +1822,76 @@ function AppInner() {
           </div>
           {tab === 'dashboard'  && <Dashboard state={state} />}
           {tab === 'xplog'      && <XPLogTab state={state} />}
+          {tab === 'achieve'    && <AchievementsTab state={state} />}
           {tab === 'units'      && <UnitsTab state={state} dispatch={dispatch} />}
           {tab === 'timetable'  && <TimetableTab state={state} dispatch={dispatch} />}
           {tab === 'ai'         && <AITab state={state} dispatch={dispatch} />}
           {tab === 'tasks'      && <TasksTab state={state} toggle={toggle} />}
           {tab === 'calendar'   && <CalendarTab state={state} dispatch={dispatch} />}
-          {tab === 'timer'      && <FocusTimer dispatch={dispatch} />}
+          {tab === 'timer'      && <FocusTimer dispatch={dispatch} prefs={prefs} />}
           {tab === 'diary'      && <DiaryTab state={state} dispatch={dispatch} />}
           {tab === 'reminders'  && <RemindersTab state={state} dispatch={dispatch} />}
-          {tab === 'resources'  && <ResourcesTab />}
-          {tab === 'achieve'    && <AchievementsTab state={state} />}
+          {tab === 'resources'  && <ResourcesTab prefs={prefs} />}
+          {tab === 'settings'   && <SettingsTab state={state} dispatch={dispatch} />}
         </div>
       </div>
     </div>
   );
 }
 
-// ─── SYNC PATCH (appended) ───────────────────────────────────────────────────
-// Re-export App with Firebase sync wired in.
-// The original export default function App() above remains intact as AppInner.
-
 // ─── Synced App wrapper ───────────────────────────────────────────────────────
 export default function App() {
-  const { user, authLoading, syncStatus, signIn, signOut, saveToCloud, subscribeToCloud } = useSync();
+  const { user, authLoading, syncStatus, signIn, signOut, saveToCloud, subscribeToCloud, loadLocal } = useSync();
 
-  // wire saveToCloud so the reducer's save() calls go to Firestore
   useEffect(() => { _saveToCloud = saveToCloud; }, [saveToCloud]);
 
+  // We need dispatch from AppInner — hoist it so the cloud can hydrate
+  const [cloudData, setCloudData] = useState(null);
   useEffect(() => {
-  if (!user) return;
-  const unsub = subscribeToCloud((cloudData) => {
-    dispatch({ type: 'loadState', state: cloudData });
-  });
-  return unsub;
-}, [user, subscribeToCloud]);
+    if (!user) return;
+    const unsub = subscribeToCloud((data) => setCloudData(data));
+    return unsub;
+  }, [user, subscribeToCloud]);
 
   if (authLoading) {
     return (
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100vh', background:'#0d1117', flexDirection:'column', gap:16 }}>
-        <div style={{ fontSize:32 }}>🗺️</div>
-        <div style={{ color:'#7d8590', fontSize:14 }}>Loading your tracker…</div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#0d1117', flexDirection: 'column', gap: 16 }}>
+        <div style={{ fontSize: 32 }}>🗺️</div>
+        <div style={{ color: '#7d8590', fontSize: 14 }}>Loading your tracker…</div>
       </div>
     );
   }
 
   if (!user) {
     return (
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100vh', background:'#0d1117', flexDirection:'column', gap:20 }}>
-        <div style={{ fontSize:48 }}>🗺️</div>
-        <div style={{ fontFamily:'Space Grotesk', fontWeight:700, fontSize:24, color:'#e6edf3' }}>My GitAway Diary</div>
-        <div style={{ color:'#7d8590', fontSize:14, maxWidth:320, textAlign:'center', lineHeight:1.6 }}>
-          Sign in with Google to sync your progress across your phone, laptop, and any other device instantly.
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#0d1117', flexDirection: 'column', gap: 20, padding: 24 }}>
+        <div style={{ fontSize: 56 }}>🗺️</div>
+        <div style={{ fontFamily: 'Space Grotesk', fontWeight: 700, fontSize: 26, color: '#e6edf3', textAlign: 'center' }}>GitAway Tracker</div>
+        <div style={{ color: '#7d8590', fontSize: 14, maxWidth: 360, textAlign: 'center', lineHeight: 1.7 }}>
+          Track your semester units, holiday roadmap tasks, focus sessions, and internship progress — all in one place. Sign in to sync across all your devices.
         </div>
-        <button onClick={signIn} style={{
-          display:'flex', alignItems:'center', gap:12, padding:'12px 28px',
-          background:'#fff', color:'#1a1a1a', border:'none', borderRadius:8,
-          fontSize:15, fontWeight:600, cursor:'pointer', fontFamily:'inherit',
-          boxShadow:'0 2px 12px rgba(0,0,0,.4)'
-        }}>
-          <svg width="20" height="20" viewBox="0 0 48 48"><path fill="#4285F4" d="M44.5 20H24v8.5h11.7C34.5 33.4 30 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.1 8.1 2.9l6.4-6.4C34.5 5.1 29.5 3 24 3 12.4 3 3 12.4 3 24s9.4 21 21 21c11 0 20-8 20-21 0-1.3-.2-2.7-.5-4z"/><path fill="#34A853" d="M6.3 14.7l7 5.1C15 16.5 19.2 13.5 24 13.5c3.1 0 5.9 1.1 8.1 2.9l6.4-6.4C34.5 6.1 29.5 4 24 4c-7.2 0-13.4 3.9-16.7 9.7z"/><path fill="#FBBC05" d="M24 45c5.3 0 10.2-1.8 14-4.9l-6.5-5.3C29.5 36.5 27 37.5 24 37.5c-5.9 0-10.9-3.9-12.7-9.3l-7 5.4C7.8 41.1 15.3 45 24 45z"/><path fill="#EA4335" d="M44.5 20H24v8.5h11.7c-.8 2.4-2.3 4.4-4.2 5.8l6.5 5.3C42 35.7 45 30.3 45 24c0-1.3-.2-2.7-.5-4z"/></svg>
+        <button onClick={signIn} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 32px', background: '#fff', color: '#1a1a1a', border: 'none', borderRadius: 10, fontSize: 15, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', boxShadow: '0 4px 20px rgba(0,0,0,.4)' }}>
+          <svg width="20" height="20" viewBox="0 0 48 48"><path fill="#4285F4" d="M44.5 20H24v8.5h11.7C34.5 33.4 30 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.1 8.1 2.9l6.4-6.4C34.5 5.1 29.5 3 24 3 12.4 3 3 12.4 3 24s9.4 21 21 21c11 0 20-8 20-21 0-1.3-.2-2.7-.5-4z" /><path fill="#34A853" d="M6.3 14.7l7 5.1C15 16.5 19.2 13.5 24 13.5c3.1 0 5.9 1.1 8.1 2.9l6.4-6.4C34.5 6.1 29.5 4 24 4c-7.2 0-13.4 3.9-16.7 9.7z" /><path fill="#FBBC05" d="M24 45c5.3 0 10.2-1.8 14-4.9l-6.5-5.3C29.5 36.5 27 37.5 24 37.5c-5.9 0-10.9-3.9-12.7-9.3l-7 5.4C7.8 41.1 15.3 45 24 45z" /><path fill="#EA4335" d="M44.5 20H24v8.5h11.7c-.8 2.4-2.3 4.4-4.2 5.8l6.5 5.3C42 35.7 45 30.3 45 24c0-1.3-.2-2.7-.5-4z" /></svg>
           Continue with Google
         </button>
-        <div style={{ color:'#7d8590', fontSize:12 }}>Your data is private and only visible to you.</div>
+        <div style={{ color: '#7d8590', fontSize: 12 }}>Your data is private and only visible to you.</div>
       </div>
     );
   }
 
-  // Sync indicator bar (top of page when signed in)
-  const syncColors = { syncing:'#d29922', synced:'#3fb950', error:'#f85149', offline:'#7d8590' };
-  const syncLabels = { syncing:'Syncing…', synced:'Synced ✓', error:'Sync error', offline:'Local only' };
+  const syncColors = { syncing: '#d29922', synced: '#3fb950', error: '#f85149', offline: '#7d8590' };
+  const syncLabels = { syncing: 'Syncing…', synced: 'Synced ✓', error: 'Sync error', offline: 'Local only' };
 
   return (
-    <div style={{ position:'relative' }}>
-      {/* thin sync bar at very top */}
-      <div style={{ position:'fixed', top:0, left:0, right:0, zIndex:2000, height:2, background: syncStatus==='synced'?'#3fb950': syncStatus==='syncing'?'#d29922':'#f85149', transition:'background .4s' }} />
-      {/* user chip */}
-      <div style={{ position:'fixed', top:6, right:12, zIndex:2001, display:'flex', alignItems:'center', gap:8, background:'rgba(22,27,34,.95)', border:'1px solid #30363d', borderRadius:20, padding:'4px 10px 4px 6px', fontSize:12 }}>
-        {user.photoURL && <img src={user.photoURL} alt="" style={{ width:20, height:20, borderRadius:'50%' }} />}
-        <span style={{ color:'#7d8590' }}>{user.displayName?.split(' ')[0]}</span>
-        <span style={{ color:syncColors[syncStatus], fontSize:11 }}>· {syncLabels[syncStatus]}</span>
-        <button onClick={signOut} style={{ background:'none', border:'none', color:'#7d8590', fontSize:11, cursor:'pointer', marginLeft:4 }}>Sign out</button>
+    <div style={{ position: 'relative' }}>
+      <div style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 2000, height: 2, background: syncStatus === 'synced' ? '#3fb950' : syncStatus === 'syncing' ? '#d29922' : '#f85149', transition: 'background .4s' }} />
+      <div style={{ position: 'fixed', top: 6, right: 12, zIndex: 2001, display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(22,27,34,.95)', border: '1px solid #30363d', borderRadius: 20, padding: '4px 10px 4px 6px', fontSize: 12 }}>
+        {user.photoURL && <img src={user.photoURL} alt="" style={{ width: 20, height: 20, borderRadius: '50%' }} />}
+        <span style={{ color: '#7d8590' }}>{user.displayName?.split(' ')[0]}</span>
+        <span style={{ color: syncColors[syncStatus], fontSize: 11 }}>· {syncLabels[syncStatus]}</span>
+        <button onClick={signOut} style={{ background: 'none', border: 'none', color: '#7d8590', fontSize: 11, cursor: 'pointer', marginLeft: 4 }}>Sign out</button>
       </div>
-      <AppInner />
+      <AppInner user={user} />
     </div>
   );
-  console.log('Firebase project:', process.env.REACT_APP_PROJECT_ID);
 }
