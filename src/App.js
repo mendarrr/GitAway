@@ -52,6 +52,7 @@ function initState() {
     completedSemesters: s.completedSemesters || [],
     completedYears: s.completedYears || [],
     diaryCount: s.diaryCount || 0,
+    customTasks: s.customTasks || [],
   };
 }
 
@@ -291,6 +292,14 @@ function reducer(state, action) {
     }
     case 'uncompleteSemester': {
       next = { ...state, completedSemesters: state.completedSemesters.filter(s => s !== action.semId) };
+      break;
+    }
+
+    case 'addCustomTask': next = { ...state, customTasks: [...(state.customTasks || []), action.task] }; break;
+    case 'updateCustomTask': next = { ...state, customTasks: (state.customTasks || []).map(t => t.id === action.task.id ? action.task : t) }; break;
+    case 'removeCustomTask': {
+      const { [action.id]: _removed, ...checkedRest } = state.checked;
+      next = { ...state, customTasks: (state.customTasks || []).filter(t => t.id !== action.id), checked: checkedRest };
       break;
     }
 
@@ -1427,49 +1436,349 @@ Help with: Data Science, Statistics, Programming, Math concepts, assignment guid
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// TASKS TAB
+// TASKS TAB  (customisable: add / edit / remove per skill category)
 // ══════════════════════════════════════════════════════════════════════════════
-function TasksTab({ state, toggle }) {
-  const [filter, setFilter] = useState('all');
-  const weeks = [...new Set(TASKS.map(t => t.week))];
+function SkillProgressChart({ skillId, tasks, checked }) {
+  const done  = tasks.filter(t => checked[t.id]).length;
+  const total = tasks.length;
+  if (!total) return null;
+  const pct   = Math.round((done / total) * 100);
+  const skill = SKILL_ROADMAPS.find(s => s.id === skillId);
+  const color = skill?.color || C.accent;
+  const r = 28; const circ = 2 * Math.PI * r;
+  const offset = circ - (pct / 100) * circ;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, minWidth: 80 }}>
+      <svg width={72} height={72} viewBox="0 0 72 72">
+        <circle cx={36} cy={36} r={r} fill="none" stroke={C.border} strokeWidth={7} />
+        <circle cx={36} cy={36} r={r} fill="none" stroke={color} strokeWidth={7}
+          strokeDasharray={circ} strokeDashoffset={offset}
+          strokeLinecap="round" transform="rotate(-90 36 36)"
+          style={{ transition: 'stroke-dashoffset .5s' }} />
+        <text x={36} y={40} textAnchor="middle" fill={color} fontSize={14} fontWeight={700}>{pct}%</text>
+      </svg>
+      <div style={{ fontSize: 10, color: C.muted, textAlign: 'center', maxWidth: 72 }}>{done}/{total} done</div>
+    </div>
+  );
+}
+
+const BLANK_TASK_FORM = { title: '', skillId: '', xp: 20, link: '', week: '' };
+
+function TasksTab({ state, toggle, dispatch }) {
+  const prefs       = state.prefs || DEFAULT_PREFS;
+  const customTasks = state.customTasks || [];
+  const chosenSkills = prefs.chosenSkills || [];
+
+  // Build the full skill list for filtering:
+  // built-in TRACKS + chosen SKILL_ROADMAPS
+  const builtInCategories = TRACKS.map(t => ({ id: t.id, label: t.label, emoji: t.emoji, color: t.color, isSkill: false }));
+  const skillCategories   = SKILL_ROADMAPS
+    .filter(s => chosenSkills.includes(s.id))
+    .map(s => ({ id: s.id, label: s.label, emoji: s.emoji, color: s.color, isSkill: true }));
+  const allCategories = [...builtInCategories, ...skillCategories];
+
+  const [activeTab, setActiveTab]   = useState('all');   // 'all' | category id | 'progress'
+  const [showModal, setShowModal]   = useState(false);
+  const [editTask, setEditTask]     = useState(null);     // null = adding new
+  const [form, setForm]             = useState(BLANK_TASK_FORM);
+  const [confirmDel, setConfirmDel] = useState(null);
+
+  // All tasks: built-in (have week/track) + custom (have skillId)
+  const allTasks = [
+    ...TASKS.map(t => ({ ...t, _builtin: true })),
+    ...customTasks.map(t => ({ ...t, _builtin: false })),
+  ];
+
+  const filteredTasks = activeTab === 'all' || activeTab === 'progress'
+    ? allTasks
+    : allTasks.filter(t => (t.track || t.skillId) === activeTab);
+
+  // Group by skill/track for display
+  function getCatMeta(task) {
+    if (task.track) {
+      const tr = TRACKS.find(t => t.id === task.track);
+      return tr ? { id: tr.id, label: tr.label, emoji: tr.emoji, color: tr.color } : null;
+    }
+    if (task.skillId) {
+      const sk = SKILL_ROADMAPS.find(s => s.id === task.skillId);
+      return sk ? { id: sk.id, label: sk.label, emoji: sk.emoji, color: sk.color } : null;
+    }
+    return null;
+  }
+
+  // Group tasks by week (built-in) or by skillId (custom, no week)
+  const grouped = [];
+  if (activeTab !== 'progress') {
+    // First: week-grouped tasks (built-in or custom with week set)
+    const withWeek = filteredTasks.filter(t => t.week);
+    const weeks = [...new Set(withWeek.map(t => t.week))].sort((a,b) => a-b);
+    weeks.forEach(week => {
+      const tasks = withWeek.filter(t => t.week === week);
+      if (tasks.length) grouped.push({ type: 'week', week, tasks });
+    });
+    // Then: custom tasks without a week, grouped by skill
+    const noWeek = filteredTasks.filter(t => !t.week);
+    const cats = [...new Set(noWeek.map(t => t.skillId).filter(Boolean))];
+    cats.forEach(skillId => {
+      const sk = SKILL_ROADMAPS.find(s => s.id === skillId);
+      const tasks = noWeek.filter(t => t.skillId === skillId);
+      if (tasks.length) grouped.push({ type: 'skill', skillId, label: `${sk?.emoji || ''} ${sk?.label || skillId}`, color: sk?.color || C.accent, tasks });
+    });
+    const orphan = noWeek.filter(t => !t.skillId);
+    if (orphan.length) grouped.push({ type: 'skill', skillId: '_other', label: '📌 Other', color: C.muted, tasks: orphan });
+  }
+
+  const openAdd = () => {
+    setEditTask(null);
+    setForm({ ...BLANK_TASK_FORM, skillId: activeTab !== 'all' && activeTab !== 'progress' ? activeTab : '' });
+    setShowModal(true);
+  };
+  const openEdit = (task) => {
+    setEditTask(task);
+    setForm({ title: task.title, skillId: task.skillId || task.track || '', xp: task.xp, link: task.link || '', week: task.week || '' });
+    setShowModal(true);
+  };
+  const saveTask = () => {
+    if (!form.title.trim()) return;
+    const taskData = {
+      title: form.title.trim(),
+      skillId: form.skillId || '',
+      xp: parseInt(form.xp) || 20,
+      link: form.link.trim(),
+      week: form.week ? parseInt(form.week) : null,
+    };
+    if (editTask) {
+      dispatch({ type: 'updateCustomTask', task: { ...editTask, ...taskData } });
+    } else {
+      dispatch({ type: 'addCustomTask', task: { id: uid(), ...taskData } });
+    }
+    setShowModal(false);
+  };
+  const deleteTask = (task) => {
+    dispatch({ type: 'removeCustomTask', id: task.id });
+    setConfirmDel(null);
+  };
+
+  const totalDone  = allTasks.filter(t => state.checked[t.id]).length;
+  const totalCount = allTasks.length;
+
   return (
     <div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-        {[['all','All'], ...TRACKS.map(t => [t.id, `${t.emoji} ${t.label}`])].map(([id, label]) => (
-          <button key={id} onClick={() => setFilter(id)} style={{ background: filter === id ? C.accent : C.surface2, color: filter === id ? '#000' : C.text, border: `1px solid ${filter === id ? C.accent : C.border}`, borderRadius: 20, padding: '5px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>{label}</button>
+      {/* ── Header row ── */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <span style={{ fontSize: 13, color: C.muted }}>{totalDone}/{totalCount} done</span>
+          <div style={{ width: 120, marginLeft: 6 }}><ProgressBar value={totalDone} max={totalCount} color={C.green} height={5} /></div>
+        </div>
+        <Btn onClick={openAdd}>+ Add Task</Btn>
+      </div>
+
+      {/* ── Category filter tabs ── */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 18, flexWrap: 'wrap' }}>
+        {[{ id: 'all', label: 'All', emoji: '📋', color: C.accent }, { id: 'progress', label: 'Progress', emoji: '📊', color: C.purple }, ...allCategories].map(cat => (
+          <button key={cat.id} onClick={() => setActiveTab(cat.id)} style={{
+            background: activeTab === cat.id ? (cat.color || C.accent) : C.surface2,
+            color: activeTab === cat.id ? '#000' : C.text,
+            border: `1px solid ${activeTab === cat.id ? (cat.color || C.accent) : C.border}`,
+            borderRadius: 20, padding: '5px 14px', fontSize: 12, fontWeight: 600,
+            cursor: 'pointer', fontFamily: 'inherit',
+          }}>{cat.emoji} {cat.label}</button>
         ))}
       </div>
-      {weeks.map(week => {
-        const tasks = TASKS.filter(t => t.week === week && (filter === 'all' || t.track === filter));
-        if (!tasks.length) return null;
-        const done = tasks.filter(t => state.checked[t.id]).length;
-        return (
-          <div key={week} style={{ marginBottom: 20 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-              <div style={{ fontWeight: 700, fontSize: 13, color: C.accent }}>Week {week}</div>
-              <div style={{ flex: 1, height: 1, background: C.border }} />
-              <Badge label={`${done}/${tasks.length}`} color={done === tasks.length ? C.green : C.amber} />
-            </div>
-            {tasks.map(task => {
-              const track = TRACKS.find(t => t.id === task.track);
-              const checked = !!state.checked[task.id];
-              return (
-                <div key={task.id} onClick={() => toggle(task.id, task.xp, task.title)} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', background: checked ? C.surface : C.surface2, borderRadius: 8, marginBottom: 6, cursor: 'pointer', border: `1px solid ${checked ? C.green + '44' : C.border}`, opacity: checked ? 0.75 : 1, transition: 'all .15s' }}>
-                  <div style={{ width: 20, height: 20, borderRadius: 5, border: `2px solid ${checked ? C.green : C.border}`, background: checked ? C.green : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 12, color: '#000' }}>{checked ? '✓' : ''}</div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13, textDecoration: checked ? 'line-through' : 'none', color: checked ? C.muted : C.text }}>{task.title}</div>
-                    <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-                      <Badge label={`${track?.emoji} ${track?.label}`} color={track?.color} />
-                      <Badge label={`+${task.xp} XP`} color={C.amber} />
+
+      {/* ── PROGRESS VIEW ── */}
+      {activeTab === 'progress' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* Overall summary card */}
+          <Card>
+            <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>Overall Progress</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 12 }}>
+              {allCategories.map(cat => {
+                const tasks = allTasks.filter(t => (t.track || t.skillId) === cat.id);
+                const done  = tasks.filter(t => state.checked[t.id]).length;
+                if (!tasks.length) return null;
+                const pct = Math.round((done / tasks.length) * 100);
+                return (
+                  <div key={cat.id} style={{ background: C.surface2, borderRadius: 10, padding: '12px 14px', borderLeft: `4px solid ${cat.color}` }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                      <span style={{ fontWeight: 600, fontSize: 13 }}>{cat.emoji} {cat.label}</span>
+                      <span style={{ fontSize: 12, color: cat.color, fontWeight: 700 }}>{done}/{tasks.length}</span>
+                    </div>
+                    <ProgressBar value={done} max={tasks.length} color={cat.color} height={7} />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 11, color: C.muted }}>
+                      <span>{pct}% complete</span>
+                      <span>+{tasks.filter(t => state.checked[t.id]).reduce((s,t) => s + (t.xp||0), 0)} XP earned</span>
                     </div>
                   </div>
-                  {task.link && <a href={task.link} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ color: C.accent, fontSize: 12, textDecoration: 'none' }}>↗</a>}
+                );
+              })}
+            </div>
+          </Card>
+
+          {/* Skill-by-skill ring charts */}
+          {chosenSkills.length > 0 && (
+            <Card>
+              <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>Skill Roadmap Progress</div>
+              <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+                {chosenSkills.map(skillId => {
+                  const tasks = allTasks.filter(t => t.skillId === skillId);
+                  const sk    = SKILL_ROADMAPS.find(s => s.id === skillId);
+                  if (!tasks.length) return (
+                    <div key={skillId} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, minWidth: 80, opacity: 0.5 }}>
+                      <div style={{ width: 72, height: 72, borderRadius: '50%', background: C.surface2, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24 }}>{sk?.emoji}</div>
+                      <div style={{ fontSize: 10, color: C.muted, textAlign: 'center' }}>No tasks yet</div>
+                      <div style={{ fontSize: 11, color: C.muted }}>{sk?.label}</div>
+                    </div>
+                  );
+                  return (
+                    <div key={skillId} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                      <SkillProgressChart skillId={skillId} tasks={tasks} checked={state.checked} />
+                      <div style={{ fontSize: 11, fontWeight: 600, color: sk?.color, maxWidth: 80, textAlign: 'center' }}>{sk?.emoji} {sk?.label}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
+
+          {/* Weekly built-in progress */}
+          <Card>
+            <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>Built-in Roadmap by Week</div>
+            {[...new Set(TASKS.map(t => t.week))].sort((a,b) => a-b).map(week => {
+              const tasks = TASKS.filter(t => t.week === week);
+              const done  = tasks.filter(t => state.checked[t.id]).length;
+              const pct   = Math.round((done / tasks.length) * 100);
+              return (
+                <div key={week} style={{ marginBottom: 12 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
+                    <span style={{ fontWeight: 600 }}>Week {week}</span>
+                    <span style={{ color: done === tasks.length ? C.green : C.muted }}>{done}/{tasks.length} · {pct}%</span>
+                  </div>
+                  <ProgressBar value={done} max={tasks.length} color={done === tasks.length ? C.green : C.accent} height={8} />
+                </div>
+              );
+            })}
+          </Card>
+        </div>
+      )}
+
+      {/* ── TASK LIST VIEW ── */}
+      {activeTab !== 'progress' && grouped.length === 0 && (
+        <Card style={{ textAlign: 'center', padding: 40 }}>
+          <div style={{ fontSize: 36, marginBottom: 10 }}>✅</div>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>No tasks here yet</div>
+          <div style={{ color: C.muted, fontSize: 13, marginBottom: 16 }}>Add a task for this skill, or choose skills in Settings → Skills Roadmap.</div>
+          <Btn onClick={openAdd}>+ Add Task</Btn>
+        </Card>
+      )}
+
+      {activeTab !== 'progress' && grouped.map((group, gi) => {
+        const done = group.tasks.filter(t => state.checked[t.id]).length;
+        return (
+          <div key={gi} style={{ marginBottom: 24 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+              {group.type === 'week'
+                ? <div style={{ fontWeight: 700, fontSize: 13, color: C.accent }}>Week {group.week}</div>
+                : <div style={{ fontWeight: 700, fontSize: 13, color: group.color }}>{group.label}</div>
+              }
+              <div style={{ flex: 1, height: 1, background: C.border }} />
+              <Badge label={`${done}/${group.tasks.length}`} color={done === group.tasks.length ? C.green : C.amber} />
+            </div>
+
+            {group.tasks.map(task => {
+              const cat     = getCatMeta(task);
+              const checked = !!state.checked[task.id];
+              return (
+                <div key={task.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: checked ? C.surface : C.surface2, borderRadius: 8, marginBottom: 6, border: `1px solid ${checked ? C.green + '44' : C.border}`, opacity: checked ? 0.75 : 1, transition: 'all .15s' }}>
+                  {/* Checkbox */}
+                  <div onClick={() => toggle(task.id, task.xp, task.title)} style={{ width: 20, height: 20, borderRadius: 5, border: `2px solid ${checked ? C.green : C.border}`, background: checked ? C.green : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 12, color: '#000', cursor: 'pointer' }}>{checked ? '✓' : ''}</div>
+
+                  {/* Content */}
+                  <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => toggle(task.id, task.xp, task.title)}>
+                    <div style={{ fontSize: 13, textDecoration: checked ? 'line-through' : 'none', color: checked ? C.muted : C.text }}>{task.title}</div>
+                    <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+                      {cat && <Badge label={`${cat.emoji} ${cat.label}`} color={cat.color} />}
+                      <Badge label={`+${task.xp} XP`} color={C.amber} />
+                      {!task._builtin && <Badge label="custom" color={C.purple} />}
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                    {task.link && <a href={task.link} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} title="Open resource" style={{ color: C.accent, fontSize: 13, padding: '2px 4px', textDecoration: 'none' }}>↗</a>}
+                    {!task._builtin && (
+                      <>
+                        <button onClick={e => { e.stopPropagation(); openEdit(task); }} title="Edit" style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 14, padding: '2px 4px' }}>✏️</button>
+                        <button onClick={e => { e.stopPropagation(); setConfirmDel(task); }} title="Delete" style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 14, padding: '2px 4px' }}>🗑️</button>
+                      </>
+                    )}
+                  </div>
                 </div>
               );
             })}
           </div>
         );
       })}
+
+      {/* ── Add / Edit Task Modal ── */}
+      {showModal && (
+        <Modal title={editTask ? 'Edit Task' : 'Add Task'} onClose={() => setShowModal(false)}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div>
+              <SectionLabel>Task Title</SectionLabel>
+              <Input value={form.title} onChange={v => setForm(f => ({ ...f, title: v }))} placeholder="e.g. Build a REST API with Node.js" />
+            </div>
+
+            <div>
+              <SectionLabel>Category / Skill</SectionLabel>
+              <select value={form.skillId} onChange={e => setForm(f => ({ ...f, skillId: e.target.value }))}
+                style={{ background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: '8px 10px', fontSize: 13, fontFamily: 'inherit', width: '100%' }}>
+                <option value="">— Choose category —</option>
+                <optgroup label="Built-in tracks">
+                  {TRACKS.map(t => <option key={t.id} value={t.id}>{t.emoji} {t.label}</option>)}
+                </optgroup>
+                {chosenSkills.length > 0 && (
+                  <optgroup label="My Skill Roadmaps">
+                    {chosenSkills.map(id => {
+                      const sk = SKILL_ROADMAPS.find(s => s.id === id);
+                      return sk ? <option key={id} value={id}>{sk.emoji} {sk.label}</option> : null;
+                    })}
+                  </optgroup>
+                )}
+              </select>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div>
+                <SectionLabel>XP Reward</SectionLabel>
+                <Input type="number" min={1} max={200} value={form.xp} onChange={v => setForm(f => ({ ...f, xp: v }))} placeholder="20" />
+              </div>
+              <div>
+                <SectionLabel>Week (optional)</SectionLabel>
+                <Input type="number" min={1} max={52} value={form.week} onChange={v => setForm(f => ({ ...f, week: v }))} placeholder="e.g. 3" />
+              </div>
+            </div>
+
+            <div>
+              <SectionLabel>Resource Link (optional)</SectionLabel>
+              <Input value={form.link} onChange={v => setForm(f => ({ ...f, link: v }))} placeholder="https://..." />
+            </div>
+
+            <Btn onClick={saveTask} disabled={!form.title.trim()}>{editTask ? 'Save Changes' : '+ Add Task'}</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {/* ── Confirm Delete Modal ── */}
+      {confirmDel && (
+        <Modal title="Delete Task?" onClose={() => setConfirmDel(null)}>
+          <p style={{ color: C.muted, fontSize: 13, marginBottom: 16 }}>Remove <strong style={{ color: C.text }}>{confirmDel.title}</strong>? This cannot be undone.</p>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <Btn color={C.red} onClick={() => deleteTask(confirmDel)}>Delete</Btn>
+            <Btn outline onClick={() => setConfirmDel(null)}>Cancel</Btn>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -1731,7 +2040,7 @@ const TABS = [
   { id: 'units',     label: '🎓 Semester Units',   group: 'semester' },
   { id: 'timetable', label: '🗓️ Timetable',        group: 'semester' },
   { id: 'ai',        label: '🤖 AI Assistant',     group: 'semester' },
-  { id: 'tasks',     label: '✅ Holiday Tasks',    group: 'holiday' },
+  { id: 'tasks',     label: '✅ Tasks',             group: 'holiday' },
   { id: 'calendar',  label: '📅 Calendar',         group: 'holiday' },
   { id: 'timer',     label: '⏱ Focus Timer',       group: 'holiday' },
   { id: 'diary',     label: '📝 Diary',            group: 'holiday' },
@@ -1826,7 +2135,7 @@ function AppInner({ user }) {
           {tab === 'units'      && <UnitsTab state={state} dispatch={dispatch} />}
           {tab === 'timetable'  && <TimetableTab state={state} dispatch={dispatch} />}
           {tab === 'ai'         && <AITab state={state} dispatch={dispatch} />}
-          {tab === 'tasks'      && <TasksTab state={state} toggle={toggle} />}
+          {tab === 'tasks'      && <TasksTab state={state} toggle={toggle} dispatch={dispatch} />}
           {tab === 'calendar'   && <CalendarTab state={state} dispatch={dispatch} />}
           {tab === 'timer'      && <FocusTimer dispatch={dispatch} prefs={prefs} />}
           {tab === 'diary'      && <DiaryTab state={state} dispatch={dispatch} />}
