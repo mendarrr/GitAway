@@ -22,13 +22,29 @@ exports.handler = async (event) => {
   }
 
   try {
+    // Check for Environment Key
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) {
+      return {
+        statusCode: 500,
+        headers: { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" },
+        body: JSON.stringify({ error: "Missing GROQ_API_KEY environment variable. Make sure your local .env file contains GROQ_API_KEY=gsk_..." })
+      };
+    }
+
     const { systemPrompt, messages } = JSON.parse(event.body);
 
-    // 2. Call Groq API (Using Llama 3 8B model which has an excellent free tier)
-    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    // Secure fallback strategy for global runtimes without built-in fetch configurations
+    const fetchMethod = globalThis.fetch || global.fetch;
+    if (!fetchMethod) {
+      throw new Error("The active Node runtime version environment lacks a native global fetch client module.");
+    }
+
+    // 2. Execute external request to upstream Groq endpoints
+    const response = await fetchMethod('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+        'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
@@ -45,14 +61,18 @@ exports.handler = async (event) => {
     });
 
     if (!response.ok) {
-      const errorData = await response.text();
-      throw new Error(`Groq API Error: ${errorData}`);
+      const errorText = await response.text();
+      return {
+        statusCode: response.status,
+        headers: { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" },
+        body: JSON.stringify({ error: `Groq Upstream Failure: ${errorText}` })
+      };
     }
 
     const data = await response.json();
     const replyText = data.choices?.[0]?.message?.content || 'No response generated.';
 
-    // 3. Return response back to your frontend
+    // 3. Return clean context response
     return {
       statusCode: 200,
       headers: {
@@ -63,14 +83,13 @@ exports.handler = async (event) => {
     };
 
   } catch (err) {
-    console.error("Backend Error:", err.message);
     return {
       statusCode: 500,
       headers: {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Headers": "Content-Type",
       },
-      body: JSON.stringify({ error: err.message })
+      body: JSON.stringify({ error: `Function Execution Interrupted: ${err.message}` })
     };
   }
 };

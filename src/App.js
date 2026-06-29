@@ -308,10 +308,9 @@ function reducer(state, action) {
       if ((cloud.xp || 0) >= (state.xp || 0)) return cloud;
       return state;
     }
-    case 'loadState': return { ...action.state, _ts: Date.now() };
+case 'loadState': return { ...action.state, _ts: Date.now() };
     default: return state;
   }
-  save(next);
   return next;
 }
 
@@ -2075,6 +2074,14 @@ const TABS = [
 function AppInner({ user }) {
   const [tab, setTab] = useState('dashboard');
   const [state, dispatch] = useReducer(reducer, null, initState);
+
+  // PASTE THIS CODE HERE:
+  useEffect(() => {
+    if (state) {
+      save(state);
+    }
+  }, [state]);
+
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   const prefs = state.prefs || DEFAULT_PREFS;
