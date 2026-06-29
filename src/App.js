@@ -347,28 +347,68 @@ function Dashboard({ state }) {
 // SEMESTER UNITS (overview)
 // ══════════════════════════════════════════════════════════════════════════════
 function UnitsTab({ state, dispatch }) {
+  const SEMESTERS = ['3.1', '3.2', '4.1', '4.2'];
+  const SEM_LABELS = { '3.1': 'Year 3 · Sem 1', '3.2': 'Year 3 · Sem 2', '4.1': 'Year 4 · Sem 1', '4.2': 'Year 4 · Sem 2' };
+
   const [showAdd, setShowAdd] = useState(false);
-  const [form, setForm] = useState({ code: '', name: '', color: UNIT_COLORS[0], semester: 'Semester 1' });
+  const [editUnitId, setEditUnitId] = useState(null); // unit being edited in modal
+  const [form, setForm] = useState({ code: '', name: '', color: UNIT_COLORS[0], semester: '3.1' });
   const [openUnit, setOpenUnit] = useState(null);
 
-  const addUnit = () => {
+  const openAddModal = () => {
+    setEditUnitId(null);
+    setForm({ code: '', name: '', color: UNIT_COLORS[0], semester: '3.1' });
+    setShowAdd(true);
+  };
+
+  const openEditModal = (e, unit) => {
+    e.stopPropagation();
+    setEditUnitId(unit.id);
+    setForm({ code: unit.code, name: unit.name, color: unit.color, semester: unit.semester || '3.1' });
+    setShowAdd(true);
+  };
+
+  const saveUnit = () => {
     if (!form.code || !form.name) return;
-    dispatch({ type: 'addUnit', unit: { id: uid(), ...form, topics: [], assignments: [], cats: [], exams: [] } });
-    setForm({ code: '', name: '', color: UNIT_COLORS[0], semester: 'Semester 1' });
+    if (editUnitId) {
+      const existing = state.units.find(u => u.id === editUnitId);
+      dispatch({ type: 'updateUnit', unit: { ...existing, ...form } });
+    } else {
+      dispatch({ type: 'addUnit', unit: { id: uid(), ...form, topics: [], assignments: [], cats: [], exams: [] } });
+    }
     setShowAdd(false);
+    setEditUnitId(null);
+  };
+
+  const deleteUnit = (e, id) => {
+    e.stopPropagation();
+    if (window.confirm('Remove this unit and all its data?')) {
+      dispatch({ type: 'removeUnit', id });
+    }
   };
 
   if (openUnit) {
     const unit = state.units.find(u => u.id === openUnit);
     if (!unit) { setOpenUnit(null); return null; }
-    return <UnitDetail unit={unit} dispatch={dispatch} onBack={() => setOpenUnit(null)} />;
+    return <UnitDetail unit={unit} dispatch={dispatch} onBack={() => setOpenUnit(null)} semLabels={SEM_LABELS} />;
   }
+
+  // Group units by semester
+  const grouped = SEMESTERS.map(sem => ({
+    sem,
+    label: SEM_LABELS[sem],
+    units: state.units.filter(u => (u.semester || '3.1') === sem),
+  })).filter(g => g.units.length > 0);
+
+  // Units with unknown/old semester values fall into an "Other" group
+  const knownSems = new Set(SEMESTERS);
+  const otherUnits = state.units.filter(u => !knownSems.has(u.semester));
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <span style={{ color: C.muted, fontSize: 13 }}>{state.units.length} units</span>
-        <Btn onClick={() => setShowAdd(true)}>+ Add unit</Btn>
+        <span style={{ color: C.muted, fontSize: 13 }}>{state.units.length} unit{state.units.length !== 1 ? 's' : ''}</span>
+        <Btn onClick={openAddModal}>+ Add unit</Btn>
       </div>
 
       {state.units.length === 0 && (
@@ -376,55 +416,96 @@ function UnitsTab({ state, dispatch }) {
           <div style={{ fontSize: 40, marginBottom: 12 }}>🎓</div>
           <div style={{ fontWeight: 600, marginBottom: 6 }}>No units yet</div>
           <div style={{ color: C.muted, fontSize: 13, marginBottom: 16 }}>Add your semester units to track assignments, CATs and exams.</div>
-          <Btn onClick={() => setShowAdd(true)}>+ Add your first unit</Btn>
+          <Btn onClick={openAddModal}>+ Add your first unit</Btn>
         </Card>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(280px,1fr))', gap: 14 }}>
-        {state.units.map(unit => {
-          const assignments = unit.assignments || [];
-          const cats = unit.cats || [];
-          const exams = unit.exams || [];
-          const topics = unit.topics || [];
-          const mastered = topics.filter(t => t.mastery === 4).length;
-          const pending = assignments.filter(a => !a.submitted).length + cats.filter(c => !c.score).length;
-          return (
-            <Card key={unit.id} style={{ cursor: 'pointer', borderLeft: `3px solid ${unit.color}` }}
-              onClick={() => setOpenUnit(unit.id)}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
-                <div>
-                  <div style={{ fontWeight: 700, color: unit.color }}>{unit.code}</div>
-                  <div style={{ fontSize: 13, marginTop: 2 }}>{unit.name}</div>
-                  <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{unit.semester}</div>
-                </div>
-                {pending > 0 && <Badge label={`${pending} pending`} color={C.red} />}
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginTop: 10 }}>
-                {[
-                  { label: 'Assignments', val: assignments.length, done: assignments.filter(a => a.submitted).length },
-                  { label: 'CATs', val: cats.length, done: cats.filter(c => c.score).length },
-                  { label: 'Topics', val: topics.length, done: mastered },
-                ].map(s => (
-                  <div key={s.label} style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: 11, color: C.muted, marginBottom: 3 }}>{s.label}</div>
-                    <ProgressBar value={s.done} max={s.val || 1} color={unit.color} />
-                    <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>{s.done}/{s.val}</div>
+      {/* Render grouped by semester */}
+      {[...grouped, ...(otherUnits.length ? [{ sem: 'other', label: 'Other', units: otherUnits }] : [])].map(group => (
+        <div key={group.sem} style={{ marginBottom: 28 }}>
+          {/* Semester group header */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+            <div style={{ fontWeight: 700, fontSize: 13, color: C.accent, fontFamily: 'Space Grotesk', letterSpacing: '.04em' }}>
+              {group.label}
+            </div>
+            <div style={{ flex: 1, height: 1, background: C.border }} />
+            <span style={{ fontSize: 11, color: C.muted }}>{group.units.length} unit{group.units.length !== 1 ? 's' : ''}</span>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(280px,1fr))', gap: 14 }}>
+            {group.units.map(unit => {
+              const assignments = unit.assignments || [];
+              const cats = unit.cats || [];
+              const topics = unit.topics || [];
+              const mastered = topics.filter(t => t.mastery === 4).length;
+              const pending = assignments.filter(a => !a.submitted).length + cats.filter(c => !c.score).length;
+              return (
+                <Card key={unit.id} style={{ cursor: 'pointer', borderLeft: `3px solid ${unit.color}`, position: 'relative' }}
+                  onClick={() => setOpenUnit(unit.id)}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, color: unit.color }}>{unit.code}</div>
+                      <div style={{ fontSize: 13, marginTop: 2 }}>{unit.name}</div>
+                      <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{SEM_LABELS[unit.semester] || unit.semester}</div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0, marginLeft: 8 }}>
+                      {pending > 0 && <Badge label={`${pending} pending`} color={C.red} />}
+                      {/* Edit icon */}
+                      <button
+                        onClick={(e) => openEditModal(e, unit)}
+                        title="Edit unit"
+                        style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 15, padding: '2px 4px', borderRadius: 4, lineHeight: 1 }}
+                        onMouseEnter={e => e.currentTarget.style.color = C.accent}
+                        onMouseLeave={e => e.currentTarget.style.color = C.muted}
+                      >✏️</button>
+                      {/* Delete icon */}
+                      <button
+                        onClick={(e) => deleteUnit(e, unit.id)}
+                        title="Delete unit"
+                        style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 15, padding: '2px 4px', borderRadius: 4, lineHeight: 1 }}
+                        onMouseEnter={e => e.currentTarget.style.color = C.red}
+                        onMouseLeave={e => e.currentTarget.style.color = C.muted}
+                      >🗑️</button>
+                    </div>
                   </div>
-                ))}
-              </div>
-            </Card>
-          );
-        })}
-      </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, marginTop: 10 }}>
+                    {[
+                      { label: 'Assignments', val: assignments.length, done: assignments.filter(a => a.submitted).length },
+                      { label: 'CATs', val: cats.length, done: cats.filter(c => c.score).length },
+                      { label: 'Topics', val: topics.length, done: mastered },
+                    ].map(s => (
+                      <div key={s.label} style={{ textAlign: 'center' }}>
+                        <div style={{ fontSize: 11, color: C.muted, marginBottom: 3 }}>{s.label}</div>
+                        <ProgressBar value={s.done} max={s.val || 1} color={unit.color} />
+                        <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>{s.done}/{s.val}</div>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        </div>
+      ))}
 
       {showAdd && (
-        <Modal title="Add Unit" onClose={() => setShowAdd(false)}>
+        <Modal title={editUnitId ? 'Edit Unit' : 'Add Unit'} onClose={() => { setShowAdd(false); setEditUnitId(null); }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <Input value={form.code} onChange={v => setForm(f => ({ ...f, code: v }))} placeholder="Unit code e.g. DSA 201" />
-            <Input value={form.name} onChange={v => setForm(f => ({ ...f, name: v }))} placeholder="Unit name e.g. Data Structures & Algorithms" />
-            <Select value={form.semester} onChange={v => setForm(f => ({ ...f, semester: v }))}>
-              {['Semester 1','Semester 2','Year 3','Year 4'].map(s => <option key={s}>{s}</option>)}
-            </Select>
+            <Input value={form.code} onChange={v => setForm(f => ({ ...f, code: v }))} placeholder="Unit code e.g. ICS 301" />
+            <Input value={form.name} onChange={v => setForm(f => ({ ...f, name: v }))} placeholder="Unit name e.g. Database Systems" />
+            <div>
+              <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>Year · Semester</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 6 }}>
+                {SEMESTERS.map(s => (
+                  <button key={s} onClick={() => setForm(f => ({ ...f, semester: s }))} style={{
+                    padding: '8px 4px', borderRadius: 7, border: `2px solid ${form.semester === s ? C.accent : C.border}`,
+                    background: form.semester === s ? C.accent + '22' : C.surface2, color: form.semester === s ? C.accent : C.muted,
+                    cursor: 'pointer', fontSize: 13, fontWeight: 600, fontFamily: 'inherit',
+                  }}>{s}</button>
+                ))}
+              </div>
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>{SEM_LABELS[form.semester]}</div>
+            </div>
             <div>
               <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>Colour</div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -435,7 +516,7 @@ function UnitsTab({ state, dispatch }) {
                 ))}
               </div>
             </div>
-            <Btn onClick={addUnit}>Add Unit</Btn>
+            <Btn onClick={saveUnit}>{editUnitId ? 'Save Changes' : 'Add Unit'}</Btn>
           </div>
         </Modal>
       )}
@@ -446,12 +527,14 @@ function UnitsTab({ state, dispatch }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // UNIT DETAIL (assignments, cats, exams, mastery)
 // ══════════════════════════════════════════════════════════════════════════════
-function UnitDetail({ unit, dispatch, onBack }) {
+function UnitDetail({ unit, dispatch, onBack, semLabels = {} }) {
   const [tab, setTab] = useState('assignments');
-  const [modal, setModal] = useState(null); // 'assignment'|'cat'|'exam'|'topic'
+  const [modal, setModal] = useState(null);
   const [editItem, setEditItem] = useState(null);
   const [form, setForm] = useState({});
   const [topicInput, setTopicInput] = useState('');
+  const [topicGroup, setTopicGroup] = useState('General');
+  const [collapsedGroups, setCollapsedGroups] = useState({});
 
   const openAdd = (type) => { setModal(type); setEditItem(null); setForm({}); };
   const openEdit = (type, item) => { setModal(type); setEditItem(item); setForm({ ...item }); };
@@ -476,7 +559,7 @@ function UnitDetail({ unit, dispatch, onBack }) {
   };
   const addTopic = () => {
     if (!topicInput.trim()) return;
-    dispatch({ type: 'addTopic', unitId: unit.id, topic: { id: uid(), name: topicInput.trim(), mastery: 0, notes: '' } });
+    dispatch({ type: 'addTopic', unitId: unit.id, topic: { id: uid(), name: topicInput.trim(), mastery: 0, notes: '', group: topicGroup || 'General' } });
     setTopicInput('');
   };
 
@@ -498,10 +581,14 @@ function UnitDetail({ unit, dispatch, onBack }) {
         <div style={{ width: 6, height: 40, borderRadius: 3, background: unit.color }} />
         <div>
           <div style={{ fontWeight: 700, fontSize: 18, color: unit.color }}>{unit.code}</div>
-          <div style={{ fontSize: 13, color: C.muted }}>{unit.name} · {unit.semester}</div>
+          <div style={{ fontSize: 13, color: C.muted }}>{unit.name} · {semLabels[unit.semester] || unit.semester}</div>
         </div>
-        <button onClick={() => dispatch({ type: 'removeUnit', id: unit.id })}
-          style={{ marginLeft: 'auto', background: 'none', border: `1px solid ${C.red}44`, color: C.red, borderRadius: 6, padding: '5px 12px', cursor: 'pointer', fontSize: 12 }}>Remove unit</button>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          <button
+            title="Remove unit"
+            onClick={() => { if (window.confirm('Remove this unit and all its data?')) { dispatch({ type: 'removeUnit', id: unit.id }); onBack(); } }}
+            style={{ background: 'none', border: `1px solid ${C.red}44`, color: C.red, borderRadius: 6, padding: '5px 10px', cursor: 'pointer', fontSize: 13 }}>🗑️ Remove</button>
+        </div>
       </div>
 
       <div style={{ display: 'flex', borderBottom: `1px solid ${C.border}`, marginBottom: 18 }}>
@@ -597,42 +684,96 @@ function UnitDetail({ unit, dispatch, onBack }) {
       {/* MASTERY */}
       {tab === 'mastery' && (
         <div>
-          <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
-            <Input value={topicInput} onChange={setTopicInput} placeholder="Add topic e.g. Hypothesis testing" style={{ flex: 1, maxWidth: 320 }} />
-            <Btn onClick={addTopic}>+ Add topic</Btn>
+          {/* Add topic row */}
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+            <Input value={topicInput} onChange={setTopicInput} placeholder="Add topic e.g. Hypothesis testing" style={{ flex: 1, minWidth: 200 }} />
+            <Select value={topicGroup} onChange={setTopicGroup} style={{ width: 160 }}>
+              {/* derive existing groups from topics, always include General */}
+              {['General', ...Array.from(new Set((unit.topics || []).map(t => t.group || 'General').filter(g => g !== 'General')))].map(g => (
+                <option key={g} value={g}>{g}</option>
+              ))}
+              <option value="__new__">+ New group…</option>
+            </Select>
+            {topicGroup === '__new__' && (
+              <Input value={collapsedGroups.__newName || ''} onChange={v => setCollapsedGroups(g => ({ ...g, __newName: v }))}
+                placeholder="Group name" style={{ width: 140 }}
+                onKeyDown={e => { if (e.key === 'Enter' && collapsedGroups.__newName?.trim()) { setTopicGroup(collapsedGroups.__newName.trim()); setCollapsedGroups(g => { const n = {...g}; delete n.__newName; return n; }); } }}
+              />
+            )}
+            <Btn onClick={() => {
+              const grp = topicGroup === '__new__' ? (collapsedGroups.__newName?.trim() || 'General') : topicGroup;
+              if (!topicInput.trim()) return;
+              dispatch({ type: 'addTopic', unitId: unit.id, topic: { id: uid(), name: topicInput.trim(), mastery: 0, notes: '', group: grp } });
+              setTopicInput('');
+              if (topicGroup === '__new__') { setTopicGroup(grp); setCollapsedGroups(g => { const n = {...g}; delete n.__newName; return n; }); }
+            }}>+ Add topic</Btn>
           </div>
-          <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+
+          {/* Mastery legend */}
+          <div style={{ display: 'flex', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
             {MASTERY_LEVELS.map(m => (
               <span key={m.level} style={{ fontSize: 12, color: m.color, display: 'flex', alignItems: 'center', gap: 4 }}>
                 <span style={{ fontSize: 14 }}>{m.icon}</span>{m.label}
               </span>
             ))}
           </div>
-          {topics.length === 0 && <div style={{ color: C.muted, fontSize: 13 }}>Add course topics to track your mastery level.</div>}
-          {topics.map(topic => {
-            const ml = MASTERY_LEVELS[topic.mastery || 0];
-            return (
-              <div key={topic.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: `1px solid ${C.border}` }}>
-                <span style={{ fontSize: 18, color: ml.color }}>{ml.icon}</span>
-                <span style={{ flex: 1, fontSize: 14 }}>{topic.name}</span>
-                <div style={{ display: 'flex', gap: 4 }}>
-                  {MASTERY_LEVELS.map(m => (
-                    <button key={m.level} onClick={() => dispatch({ type: 'setMastery', unitId: unit.id, topicId: topic.id, level: m.level })}
-                      style={{ width: 26, height: 26, borderRadius: '50%', border: `2px solid ${m.color}`, background: (topic.mastery || 0) >= m.level ? m.color : 'transparent', cursor: 'pointer', fontSize: 10 }} />
-                  ))}
+
+          {topics.length === 0 && <div style={{ color: C.muted, fontSize: 13 }}>Add course topics to track your mastery level. Use groups to organise by chapter or theme.</div>}
+
+          {/* Grouped rendering */}
+          {(() => {
+            const groups = Array.from(new Set(topics.map(t => t.group || 'General')));
+            return groups.map(grp => {
+              const grpTopics = topics.filter(t => (t.group || 'General') === grp);
+              const grpMastered = grpTopics.filter(t => t.mastery === 4).length;
+              const collapsed = !!collapsedGroups[grp];
+              return (
+                <div key={grp} style={{ marginBottom: 16 }}>
+                  {/* Group header */}
+                  <div
+                    onClick={() => setCollapsedGroups(g => ({ ...g, [grp]: !g[grp] }))}
+                    style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: C.surface2, borderRadius: 7, cursor: 'pointer', marginBottom: collapsed ? 0 : 8 }}>
+                    <span style={{ fontSize: 13, color: C.muted, userSelect: 'none' }}>{collapsed ? '▸' : '▾'}</span>
+                    <span style={{ fontWeight: 600, fontSize: 13 }}>{grp}</span>
+                    <div style={{ flex: 1 }}>
+                      <ProgressBar value={grpMastered} max={grpTopics.length} color={unit.color} height={4} />
+                    </div>
+                    <span style={{ fontSize: 11, color: C.muted, whiteSpace: 'nowrap' }}>{grpMastered}/{grpTopics.length} mastered</span>
+                    {grpMastered > 0 && <span style={{ fontSize: 11, color: C.amber }}>+{grpMastered * 25} XP</span>}
+                  </div>
+
+                  {!collapsed && grpTopics.map(topic => {
+                    const ml = MASTERY_LEVELS[topic.mastery || 0];
+                    return (
+                      <div key={topic.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '9px 12px', borderBottom: `1px solid ${C.border}`, background: C.surface, borderRadius: 6, marginBottom: 2 }}>
+                        <span style={{ fontSize: 18, color: ml.color, flexShrink: 0 }}>{ml.icon}</span>
+                        <span style={{ flex: 1, fontSize: 14 }}>{topic.name}</span>
+                        {/* Mastery buttons */}
+                        <div style={{ display: 'flex', gap: 3 }}>
+                          {MASTERY_LEVELS.map(m => (
+                            <button key={m.level} onClick={() => dispatch({ type: 'setMastery', unitId: unit.id, topicId: topic.id, level: m.level })}
+                              title={m.label}
+                              style={{ width: 22, height: 22, borderRadius: '50%', border: `2px solid ${m.color}`, background: (topic.mastery || 0) >= m.level ? m.color : 'transparent', cursor: 'pointer', fontSize: 9, transition: 'all .15s' }} />
+                          ))}
+                        </div>
+                        <button onClick={() => dispatch({ type: 'removeTopic', unitId: unit.id, topicId: topic.id })}
+                          style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 14, padding: '0 4px' }}
+                          title="Remove topic">✕</button>
+                      </div>
+                    );
+                  })}
                 </div>
-                <button onClick={() => dispatch({ type: 'removeTopic', unitId: unit.id, topicId: topic.id })}
-                  style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 14 }}>✕</button>
-              </div>
-            );
-          })}
+              );
+            });
+          })()}
+
           {topics.length > 0 && (
             <div style={{ marginTop: 16 }}>
-              <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>Overall mastery</div>
+              <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>Overall mastery across all groups</div>
               <ProgressBar value={topics.reduce((s, t) => s + (t.mastery || 0), 0)} max={topics.length * 4} color={unit.color} height={10} />
               <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>
                 {topics.filter(t => t.mastery === 4).length}/{topics.length} topics mastered
-                {topics.filter(t => t.mastery === 4).length > 0 && <span style={{ color: C.amber }}> · +{topics.filter(t => t.mastery === 4).length * 25} XP earned</span>}
+                {topics.filter(t => t.mastery === 4).length > 0 && <span style={{ color: C.amber }}> · +{topics.filter(t => t.mastery === 4).length * 25} XP</span>}
               </div>
             </div>
           )}
