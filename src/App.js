@@ -88,7 +88,7 @@ function Modal({ title, onClose, children }) {
 }
 
 const trackColor = (id) => TRACKS.find(t => t.id === id)?.color || C.accent;
-const UNIT_COLORS = ['#58a6ff','#3fb950','#bc8cff','#d29922','#f85149','#ff9500','#ff6ac1','#00d4aa','#e6c07b','#56d364','#ffa198','#c9d1d9','#f0883e','#a5f3fc','#d946ef','#84cc16','#fb923c','#a78bfa','#34d399','#ff7b72'];
+const UNIT_COLORS = ['#58a6ff','#3fb950','#bc8cff','#d29922','#f85149','#39d353','#ff7b72','#79c0ff'];
 const uid = () => Math.random().toString(36).slice(2, 9);
 
 // ─── XP logic (auto) ───────────────────────────────────────────────────────
@@ -511,7 +511,7 @@ function UnitsTab({ state, dispatch }) {
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {UNIT_COLORS.map(c => (
                   <div key={c} onClick={() => setForm(f => ({ ...f, color: c }))}
-                    style={{ width: 28, height: 28, borderRadius: '50%', background: c, cursor: 'pointer',
+                    style={{ width: 26, height: 26, borderRadius: '50%', background: c, cursor: 'pointer',
                       border: form.color === c ? '3px solid white' : '2px solid transparent' }} />
                 ))}
               </div>
@@ -1503,7 +1503,7 @@ function AppInner() {
       <div style={{ width: sidebarOpen ? 220 : 56, flexShrink: 0, background: C.surface, borderRight: `1px solid ${C.border}`, transition: 'width .2s', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <div style={{ padding: '16px 12px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 20, flexShrink: 0 }}>🗺️</span>
-          {sidebarOpen && <span style={{ fontFamily: 'Space Grotesk', fontWeight: 700, fontSize: 14, whiteSpace: 'nowrap' }}>Abby's Tracker</span>}
+          {sidebarOpen && <span style={{ fontFamily: 'Space Grotesk', fontWeight: 700, fontSize: 14, whiteSpace: 'nowrap' }}>GitAway Tracker</span>}
           <button onClick={() => setSidebarOpen(o => !o)} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: C.muted, fontSize: 18, cursor: 'pointer', flexShrink: 0 }}>{sidebarOpen ? '◂' : '▸'}</button>
         </div>
         <nav style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
@@ -1512,8 +1512,8 @@ function AppInner() {
               {sidebarOpen && <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: '.08em', textTransform: 'uppercase', padding: '10px 14px 4px' }}>{g.label}</div>}
               {TABS.filter(t => t.group === g.id).map(t => (
                 <button key={t.id} onClick={() => setTab(t.id)} style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%', padding: '9px 14px', background: tab === t.id ? 'rgba(88,166,255,0.12)' : 'none', border: 'none', borderLeft: `3px solid ${tab === t.id ? C.accent : 'transparent'}`, color: tab === t.id ? C.accent : C.text, textAlign: 'left', fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                  <span style={{ fontSize: 16, flexShrink: 0 }}>{t.label.split(' ')[0]}</span>
-                  {sidebarOpen && <span>{t.label.split(' ').slice(1).join(' ')}</span>}
+                  <span style={{ fontSize: 16, flexShrink: 0 }}>{t.label.slice(0,2)}</span>
+                  {sidebarOpen && <span>{t.label.slice(3)}</span>}
                 </button>
               ))}
             </div>
