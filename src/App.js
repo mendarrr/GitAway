@@ -1384,19 +1384,42 @@ Chosen roadmaps: ${(prefs.chosenSkills||[]).join(', ') || 'none yet'}
 
 Help with: Data Science, Statistics, Programming, Math concepts, assignment guidance, CAT/exam revision, study planning, Kenya internship advice. Keep responses concise but thorough.`;
 
-  const send = async () => {
+const send = async () => {
     if (!input.trim() || loading) return;
+    
     const userMsg = { role: 'user', content: input.trim() };
     dispatch({ type: 'aiMessage', msg: userMsg });
-    setInput(''); setLoading(true);
+    setInput(''); 
+    setLoading(true);
+    
     try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 1000, system: systemPrompt, messages: [...state.aiHistory, userMsg].map(m => ({ role: m.role, content: m.content })) }),
+      // Points to your relative Netlify functions path
+      const res = await fetch('/.netlify/functions/chat', {
+        method: 'POST', 
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          systemPrompt: systemPrompt, 
+          messages: [...state.aiHistory, userMsg] 
+        }),
       });
+      
+      if (!res.ok) {
+        throw new Error('Server error handling request');
+      }
+
       const data = await res.json();
-      dispatch({ type: 'aiMessage', msg: { role: 'assistant', content: data.content?.[0]?.text || 'No response.' } });
-    } catch { dispatch({ type: 'aiMessage', msg: { role: 'assistant', content: 'Network error — check connection and try again.' } }); }
+      
+      dispatch({ 
+        type: 'aiMessage', 
+        msg: { role: 'assistant', content: data.text || 'No response.' } 
+      });
+    } catch (error) {
+      console.error("Frontend Error:", error);
+      dispatch({ 
+        type: 'aiMessage', 
+        msg: { role: 'assistant', content: 'Network error — check connection and try again.' } 
+      });
+    }
     setLoading(false);
   };
 
