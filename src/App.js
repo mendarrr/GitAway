@@ -127,8 +127,8 @@ function applyTheme(prefs) {
   document.body.style.fontFamily = FONTS[prefs.font] || FONTS.system;
 }
 
-function Card({ children, style, ...rest }) {
-  return <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 18, ...style }} {...rest}>{children}</div>;
+function Card({ children, style }) {
+  return <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 18, ...style }}>{children}</div>;
 }
 function Badge({ label, color = C.accent }) {
   return <span style={{ background: color + '22', color, fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 20, border: `1px solid ${color}44` }}>{label}</span>;
@@ -1954,6 +1954,35 @@ function TasksTab({ state, toggle, dispatch }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // FOCUS TIMER (uses prefs for durations)
 // ══════════════════════════════════════════════════════════════════════════════
+// Plays a pleasant three-tone chime using the Web Audio API — no external
+// sound file needed, works fully offline, and doesn't require any asset
+// hosting or network request.
+function playChime() {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new AudioCtx();
+    const notes = [659.25, 783.99, 987.77]; // E5, G5, B5 — a bright ascending chime
+    notes.forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      const start = ctx.currentTime + i * 0.15;
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.linearRampToValueAtTime(0.25, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.5);
+      osc.start(start);
+      osc.stop(start + 0.55);
+    });
+    // close the context after the chime finishes to free resources
+    setTimeout(() => ctx.close(), (notes.length * 0.15 + 0.6) * 1000);
+  } catch (e) {
+    console.warn('Could not play chime:', e);
+  }
+}
+
 function FocusTimer({ dispatch, prefs }) {
   const modes = [
     { id: 'work',  label: '🍅 Focus',      mins: prefs?.timerWork  || 90 },
@@ -1975,6 +2004,7 @@ function FocusTimer({ dispatch, prefs }) {
           if (s <= 1) {
             clearInterval(intervalRef.current); setRunning(false);
             dispatch({ type: 'focusDone', minutes: mode.mins, mode: mode.label });
+            if (prefs?.timerSound !== false) playChime();
             if ('Notification' in window && Notification.permission === 'granted')
               new Notification('✅ Session Complete!', { body: `${mode.label} done. +10 XP!` });
             return 0;
@@ -2016,7 +2046,13 @@ function FocusTimer({ dispatch, prefs }) {
         </div>
         <div style={{ marginTop: 14, fontSize: 12, color: C.amber }}>⭐ Each completed session earns +10 XP</div>
         <div style={{ marginTop: 6, fontSize: 12, color: C.muted }}>Customise durations in Settings → Timer</div>
-        <button onClick={() => 'Notification' in window && Notification.requestPermission()} style={{ marginTop: 8, background: 'transparent', color: C.muted, border: 'none', fontSize: 12, textDecoration: 'underline', cursor: 'pointer' }}>Enable notifications</button>
+        <div style={{ marginTop: 10, display: 'flex', gap: 14, justifyContent: 'center', alignItems: 'center' }}>
+          <button onClick={() => dispatch({ type: 'setPrefs', prefs: { timerSound: prefs?.timerSound === false } })} style={{ background: 'transparent', color: prefs?.timerSound === false ? C.muted : C.accent, border: 'none', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 4 }}>
+            {prefs?.timerSound === false ? '🔇 Sound off' : '🔔 Sound on'}
+          </button>
+          <button onClick={playChime} style={{ background: 'transparent', color: C.muted, border: 'none', fontSize: 12, textDecoration: 'underline', cursor: 'pointer', fontFamily: 'inherit' }}>Test sound</button>
+          <button onClick={() => 'Notification' in window && Notification.requestPermission()} style={{ background: 'transparent', color: C.muted, border: 'none', fontSize: 12, textDecoration: 'underline', cursor: 'pointer', fontFamily: 'inherit' }}>Enable notifications</button>
+        </div>
       </Card>
     </div>
   );
@@ -2292,7 +2328,7 @@ function RemindersTab({ state, dispatch }) {
   const linkedReminderKeys = new Set(state.reminders.filter(r => r.linkedItemId).map(r => `${r.unitId}:${r.itemType}:${r.linkedItemId}`));
   const suggestions = [];
   (state.units || []).forEach(u => {
-    (u.assignments || []).forEach(a => { if (a.dueDate && !a.submitted) suggestions.push({ unitId: u.id, unitName: u.name, itemType: 'assignment', linkedItemId: a.id, title: `${u.code || u.name}: ${a.title}`, date: a.dueDate, icon: '📋' }); });
+    (u.assignments || []).forEach(a => { if (a.due && !a.submitted) suggestions.push({ unitId: u.id, unitName: u.name, itemType: 'assignment', linkedItemId: a.id, title: `${u.code || u.name}: ${a.title}`, date: a.due, icon: '📋' }); });
     (u.cats || []).forEach(c => { if (c.date && !c.score) suggestions.push({ unitId: u.id, unitName: u.name, itemType: 'cat', linkedItemId: c.id, title: `${u.code || u.name}: ${c.title || 'CAT'}`, date: c.date, icon: '📝' }); });
     (u.exams || []).forEach(e => { if (e.date && !e.score) suggestions.push({ unitId: u.id, unitName: u.name, itemType: 'exam', linkedItemId: e.id, title: `${u.code || u.name}: ${e.title || 'Exam'}`, date: e.date, icon: '📚' }); });
   });
@@ -2468,8 +2504,11 @@ function AppInner({ user, cloudData }) {
       const now = new Date();
       state.reminders.forEach(r => {
         const dt = new Date(`${r.date}T${r.time || '09:00'}`);
-        if (Math.abs(now - dt) / 1000 < 35 && 'Notification' in window && Notification.permission === 'granted')
-          new Notification('⏰ ' + r.title, { body: r.type });
+        if (Math.abs(now - dt) / 1000 < 35) {
+          if (prefs?.timerSound !== false) playChime();
+          if ('Notification' in window && Notification.permission === 'granted')
+            new Notification('⏰ ' + r.title, { body: r.type });
+        }
       });
     }, 30000);
     return () => clearInterval(id);
