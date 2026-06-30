@@ -127,8 +127,8 @@ function applyTheme(prefs) {
   document.body.style.fontFamily = FONTS[prefs.font] || FONTS.system;
 }
 
-function Card({ children, style }) {
-  return <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 18, ...style }}>{children}</div>;
+function Card({ children, style, ...rest }) {
+  return <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 18, ...style }} {...rest}>{children}</div>;
 }
 function Badge({ label, color = C.accent }) {
   return <span style={{ background: color + '22', color, fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 20, border: `1px solid ${color}44` }}>{label}</span>;
@@ -183,6 +183,31 @@ function dedupeById(arr) {
     if (key === undefined || !seen.has(key)) { if (key !== undefined) seen.add(key); out.push(item); }
   }
   return out;
+}
+
+// Merge two units arrays so that nested assignments/cats/exams/topics survive
+// even when the unit object itself exists on both sides with different
+// nested content (e.g. a CAT added on one device, an assignment graded on
+// another). Units present on only one side pass through unchanged; units
+// present on both sides get their nested item arrays unioned by id.
+function mergeUnits(baseUnits, otherUnits) {
+  const otherById = new Map((otherUnits || []).map(u => [u.id, u]));
+  const seen = new Set();
+  const merged = (baseUnits || []).map(u => {
+    seen.add(u.id);
+    const o = otherById.get(u.id);
+    if (!o) return u; // only exists in base — keep as is
+    return {
+      ...o, ...u, // base's top-level fields win (name/color edits etc.)
+      assignments: dedupeById([...(u.assignments || []), ...(o.assignments || [])]),
+      cats:        dedupeById([...(u.cats        || []), ...(o.cats        || [])]),
+      exams:       dedupeById([...(u.exams       || []), ...(o.exams       || [])]),
+      topics:      dedupeById([...(u.topics      || []), ...(o.topics      || [])]),
+    };
+  });
+  // units that exist only on the "other" side need to be appended too
+  (otherUnits || []).forEach(u => { if (!seen.has(u.id)) merged.push(u); });
+  return merged;
 }
 
 // ─── XP logic ───────────────────────────────────────────────────────────────
@@ -399,7 +424,7 @@ function reducer(state, action) {
       return {
         ...base,
         reminders: dedupeById([...(base.reminders || []), ...(other.reminders || [])]),
-        units: dedupeById([...(base.units || []), ...(other.units || [])]),
+        units: mergeUnits(base.units, other.units),
         diary: { ...(other.diary || {}), ...(base.diary || {}) },
         calNotes: { ...(other.calNotes || {}), ...(base.calNotes || {}) },
         customTasks: dedupeById([...(base.customTasks || []), ...(other.customTasks || [])]),
@@ -2026,18 +2051,20 @@ function CalendarTab({ state, dispatch }) {
             const hasFocus = state.focusSessions.some(s => s.date === key);
             const hasNote = !!state.calNotes[key];
             const hasDeadline = state.units.some(u => [...(u.assignments || []), ...(u.cats || []), ...(u.exams || [])].some(item => (item.due || item.date) === key));
+            const hasReminder = (state.reminders || []).some(r => r.date === key);
             return <div key={d} onClick={() => setSelected(key)} style={{ aspectRatio: '1', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', borderRadius: 8, cursor: 'pointer', background: isSel ? C.accent : isToday ? 'rgba(88,166,255,0.15)' : C.surface2, border: `2px solid ${isToday ? C.accent : 'transparent'}`, color: isSel ? '#000' : C.text, fontWeight: isToday ? 700 : 400, fontSize: 13 }}>
               {d}
               <div style={{ display: 'flex', gap: 2, marginTop: 2 }}>
                 {hasFocus && <div style={{ width: 4, height: 4, borderRadius: '50%', background: isSel ? '#000' : C.purple }} />}
                 {hasNote && <div style={{ width: 4, height: 4, borderRadius: '50%', background: isSel ? '#000' : C.amber }} />}
                 {hasDeadline && <div style={{ width: 4, height: 4, borderRadius: '50%', background: isSel ? '#000' : C.red }} />}
+                {hasReminder && <div style={{ width: 4, height: 4, borderRadius: '50%', background: isSel ? '#000' : C.green }} />}
               </div>
             </div>;
           })}
         </div>
-        <div style={{ marginTop: 10, display: 'flex', gap: 12, fontSize: 11, color: C.muted }}>
-          <span>🟣 focus</span><span>🟡 note</span><span>🔴 deadline</span>
+        <div style={{ marginTop: 10, display: 'flex', gap: 12, fontSize: 11, color: C.muted, flexWrap: 'wrap' }}>
+          <span>🟣 focus</span><span>🟡 note</span><span>🔴 deadline</span><span>🟢 reminder</span>
         </div>
       </Card>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -2048,6 +2075,7 @@ function CalendarTab({ state, dispatch }) {
             const items = [...(u.assignments || []).filter(a => (a.due || '') === selected), ...(u.cats || []).filter(c => (c.date || '') === selected), ...(u.exams || []).filter(e => (e.date || '') === selected)];
             return items.map(item => <div key={item.id} style={{ fontSize: 12, color: C.red, marginBottom: 2 }}>📌 {u.code}: {item.title}</div>);
           })}
+          {(state.reminders || []).filter(r => r.date === selected).map(r => <div key={r.id} style={{ fontSize: 12, color: C.green, marginBottom: 2 }}>🔔 {r.title}{r.time ? ` at ${r.time}` : ''}</div>)}
           {state.calNotes[selected] && <div style={{ fontSize: 13, color: C.muted, marginTop: 6, whiteSpace: 'pre-wrap' }}>{state.calNotes[selected]}</div>}
         </Card>
         <Card>
@@ -2257,24 +2285,67 @@ function RemindersTab({ state, dispatch }) {
   const [form, setForm] = useState({ title: '', date: '', time: '', type: 'study' });
   const sorted = [...state.reminders].sort((a, b) => a.date.localeCompare(b.date));
   const now = new Date();
+
+  // Build a list of unit deadlines (assignments/CATs/exams) that have a due
+  // date but no reminder linked to them yet, so they can be turned into a
+  // reminder with one click instead of retyping the date by hand.
+  const linkedReminderKeys = new Set(state.reminders.filter(r => r.linkedItemId).map(r => `${r.unitId}:${r.itemType}:${r.linkedItemId}`));
+  const suggestions = [];
+  (state.units || []).forEach(u => {
+    (u.assignments || []).forEach(a => { if (a.dueDate && !a.submitted) suggestions.push({ unitId: u.id, unitName: u.name, itemType: 'assignment', linkedItemId: a.id, title: `${u.code || u.name}: ${a.title}`, date: a.dueDate, icon: '📋' }); });
+    (u.cats || []).forEach(c => { if (c.date && !c.score) suggestions.push({ unitId: u.id, unitName: u.name, itemType: 'cat', linkedItemId: c.id, title: `${u.code || u.name}: ${c.title || 'CAT'}`, date: c.date, icon: '📝' }); });
+    (u.exams || []).forEach(e => { if (e.date && !e.score) suggestions.push({ unitId: u.id, unitName: u.name, itemType: 'exam', linkedItemId: e.id, title: `${u.code || u.name}: ${e.title || 'Exam'}`, date: e.date, icon: '📚' }); });
+  });
+  const unlinkedSuggestions = suggestions.filter(s => !linkedReminderKeys.has(`${s.unitId}:${s.itemType}:${s.linkedItemId}`));
+
+  const addFromSuggestion = (s) => {
+    dispatch({ type: 'addReminder', reminder: { id: uid(), title: s.title, date: s.date, time: '09:00', type: s.itemType, unitId: s.unitId, itemType: s.itemType, linkedItemId: s.linkedItemId } });
+  };
+
+  const submitForm = () => {
+    if (!form.title || !form.date) return;
+    dispatch({ type: 'addReminder', reminder: { ...form, id: uid() } });
+    setForm({ title: '', date: '', time: '', type: 'study' });
+  };
+
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-      <Card>
-        <div style={{ fontWeight: 600, marginBottom: 14 }}>➕ Add Reminder</div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <Input value={form.title} onChange={v => setForm(f => ({ ...f, title: v }))} placeholder="What to remember..." />
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <Input type="date" value={form.date} onChange={v => setForm(f => ({ ...f, date: v }))} />
-            <Input type="time" value={form.time} onChange={v => setForm(f => ({ ...f, time: v }))} />
+      <div>
+        <Card style={{ marginBottom: 16 }}>
+          <div style={{ fontWeight: 600, marginBottom: 14 }}>➕ Add Reminder</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <Input value={form.title} onChange={v => setForm(f => ({ ...f, title: v }))} placeholder="What to remember..." />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <Input type="date" value={form.date} onChange={v => setForm(f => ({ ...f, date: v }))} />
+              <Input type="time" value={form.time} onChange={v => setForm(f => ({ ...f, time: v }))} />
+            </div>
+            <Select value={form.type} onChange={v => setForm(f => ({ ...f, type: v }))}>
+              {['study','assignment','cat','exam','apply','review','other'].map(t => <option key={t}>{t}</option>)}
+            </Select>
+            <Btn onClick={submitForm}>Set Reminder</Btn>
           </div>
-          <Select value={form.type} onChange={v => setForm(f => ({ ...f, type: v }))}>
-            {['study','assignment','cat','exam','apply','review','other'].map(t => <option key={t}>{t}</option>)}
-          </Select>
-          <Btn onClick={() => { if (!form.title || !form.date) return; dispatch({ type: 'addReminder', reminder: { ...form, id: Date.now() } }); setForm({ title: '', date: '', time: '', type: 'study' }); }}>Set Reminder</Btn>
-        </div>
-      </Card>
+        </Card>
+
+        {unlinkedSuggestions.length > 0 && (
+          <Card>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>🔗 Link a deadline</div>
+            <div style={{ fontSize: 12, color: C.muted, marginBottom: 12 }}>These have due dates from your Semester Units but no reminder yet.</div>
+            {unlinkedSuggestions.map(s => (
+              <div key={`${s.unitId}:${s.itemType}:${s.linkedItemId}`} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: `1px solid ${C.border}` }}>
+                <span style={{ fontSize: 16 }}>{s.icon}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title}</div>
+                  <div style={{ fontSize: 11, color: C.muted }}>{s.date}</div>
+                </div>
+                <Btn onClick={() => addFromSuggestion(s)} style={{ padding: '4px 10px', fontSize: 11, flexShrink: 0 }}>+ Remind me</Btn>
+              </div>
+            ))}
+          </Card>
+        )}
+      </div>
+
       <Card>
-        <div style={{ fontWeight: 600, marginBottom: 14 }}>🔔 All Reminders</div>
+        <div style={{ fontWeight: 600, marginBottom: 14 }}>🔔 All Reminders <span style={{ color: C.muted, fontWeight: 400, fontSize: 12 }}>({sorted.length})</span></div>
         {sorted.length === 0 && <p style={{ color: C.muted, fontSize: 13 }}>No reminders yet.</p>}
         {sorted.map(r => {
           const dt = new Date(`${r.date}T${r.time || '23:59'}`); const overdue = dt < now;
@@ -2282,7 +2353,7 @@ function RemindersTab({ state, dispatch }) {
             <span style={{ fontSize: 18 }}>{r.type === 'exam' ? '📚' : r.type === 'cat' ? '📝' : r.type === 'assignment' ? '📋' : '📌'}</span>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 13, fontWeight: 500 }}>{r.title}</div>
-              <div style={{ fontSize: 11, color: overdue ? C.red : C.muted }}>{overdue ? '⚠ Overdue – ' : ''}{r.date}{r.time ? ' at ' + r.time : ''}</div>
+              <div style={{ fontSize: 11, color: overdue ? C.red : C.muted }}>{overdue ? '⚠ Overdue – ' : ''}{r.date}{r.time ? ' at ' + r.time : ''}{r.linkedItemId ? ' · linked to unit' : ''}</div>
             </div>
             <button onClick={() => dispatch({ type: 'removeReminder', id: r.id })} style={{ background: 'none', border: 'none', color: C.muted, fontSize: 16, cursor: 'pointer' }}>✕</button>
           </div>;
@@ -2367,11 +2438,11 @@ function AppInner({ user, cloudData }) {
     if (cloudData) dispatch({ type: '_hydrate', data: cloudData });
   }, [cloudData]);
 
-  // PASTE THIS CODE HERE:
+  // Persist on every state change. This is cheap and instant locally —
+  // saveToCloud (in useSync.js) debounces the actual Firestore write
+  // internally, so this does not cause excess network traffic.
   useEffect(() => {
-    if (state) {
-      save(state);
-    }
+    if (state) save(state);
   }, [state]);
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -2472,7 +2543,7 @@ function AppInner({ user, cloudData }) {
 
 // ─── Synced App wrapper ───────────────────────────────────────────────────────
 export default function App() {
-  const { user, authLoading, syncStatus, signIn, signOut, saveToCloud, subscribeToCloud, loadLocal } = useSync();
+  const { user, authLoading, syncStatus, signIn, signOut, saveToCloud, subscribeToCloud, flushNow, loadLocal } = useSync();
 
   useEffect(() => { _saveToCloud = saveToCloud; }, [saveToCloud]);
 
@@ -2520,7 +2591,8 @@ export default function App() {
         {user.photoURL && <img src={user.photoURL} alt="" style={{ width: 20, height: 20, borderRadius: '50%' }} />}
         <span style={{ color: '#7d8590' }}>{user.displayName?.split(' ')[0]}</span>
         <span style={{ color: syncColors[syncStatus], fontSize: 11 }}>· {syncLabels[syncStatus]}</span>
-        <button onClick={signOut} style={{ background: 'none', border: 'none', color: '#7d8590', fontSize: 11, cursor: 'pointer', marginLeft: 4 }}>Sign out</button>
+        {syncStatus !== 'syncing' && <button onClick={flushNow} title="Sync now" style={{ background: 'none', border: 'none', color: '#7d8590', fontSize: 11, cursor: 'pointer' }}>↻</button>}
+        <button onClick={() => { flushNow(); signOut(); }} style={{ background: 'none', border: 'none', color: '#7d8590', fontSize: 11, cursor: 'pointer', marginLeft: 4 }}>Sign out</button>
       </div>
       <AppInner user={user} cloudData={cloudData} />
     </div>
