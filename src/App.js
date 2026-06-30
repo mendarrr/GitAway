@@ -32,11 +32,27 @@ const DEFAULT_PREFS = {
               { id: '4.2', year: 4, sem: 2, label: 'Year 4 · Sem 2', status: 'upcoming' }],
 };
 
+// Old versions stored diary as { [date]: "text" } — a single string per day,
+// which silently overwrote earlier entries on the same date. New format is
+// { [date]: [{id, text, createdAt, font, color, size, bold, underline}] }.
+// This converts any legacy string entries into the new array shape so no
+// existing diary content is lost on upgrade.
+function migrateDiary(diary) {
+  const out = {};
+  Object.entries(diary).forEach(([date, val]) => {
+    if (Array.isArray(val)) { out[date] = val; return; }
+    if (typeof val === 'string' && val.trim()) {
+      out[date] = [{ id: uid(), text: val, createdAt: new Date(date).getTime() || Date.now(), font: 'handwritten', color: '#e6edf3', size: 15, bold: false, underline: false }];
+    }
+  });
+  return out;
+}
+
 function initState() {
   const s = load();
   return {
     checked: s.checked || {},
-    diary: s.diary || {},
+    diary: migrateDiary(s.diary || {}),
     calNotes: s.calNotes || {},
     reminders: s.reminders || [],
     focusSessions: s.focusSessions || [],
@@ -53,6 +69,8 @@ function initState() {
     completedYears: s.completedYears || [],
     diaryCount: s.diaryCount || 0,
     customTasks: s.customTasks || [],
+    taskOverrides: s.taskOverrides || {},   // { [builtinTaskId]: { title, xp, link, week, skillId/track } }
+    deletedTaskIds: s.deletedTaskIds || [], // built-in task ids the user removed
   };
 }
 
@@ -77,6 +95,18 @@ const FONTS = {
   mono: `'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace`,
   rounded: `'Nunito', 'Varela Round', 'Quicksand', sans-serif`,
 };
+
+// Font choices specifically for diary entries — handwritten + simple styles,
+// separate from the app-wide UI font in Settings → Appearance.
+const DIARY_FONTS = {
+  handwritten: { label: '✍️ Handwritten', family: `'Caveat', cursive` },
+  journal:     { label: '📔 Journal',     family: `'Kalam', cursive` },
+  casual:      { label: '🖊️ Casual',      family: `'Patrick Hand', cursive` },
+  simple:      { label: 'Aa Simple',      family: `-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif` },
+  serif:       { label: 'Aa Serif',       family: `Georgia, 'Times New Roman', serif` },
+};
+const DIARY_GOOGLE_FONTS_URL = 'https://fonts.googleapis.com/css2?family=Caveat:wght@400;700&family=Kalam:wght@400;700&family=Patrick+Hand&display=swap';
+const DIARY_COLORS = ['#e6edf3', '#58a6ff', '#3fb950', '#d29922', '#bc8cff', '#ff7b72', '#f0883e', '#56d364'];
 
 // ─── shared ui ─────────────────────────────────────────────────────────────
 let C = {
@@ -143,6 +173,17 @@ function SectionLabel({ children }) {
 
 const UNIT_COLORS = ['#58a6ff','#3fb950','#bc8cff','#d29922','#f85149','#ff9500','#ff6ac1','#00d4aa','#e6c07b','#56d364','#ffa198','#c9d1d9','#f0883e','#a5f3fc','#d946ef','#84cc16','#fb923c','#a78bfa','#34d399','#ff7b72'];
 const uid = () => Math.random().toString(36).slice(2, 9);
+// Merge two arrays of {id,...} objects, keeping the first occurrence of each id
+// (used when reconciling local vs cloud state so nothing gets duplicated).
+function dedupeById(arr) {
+  const seen = new Set();
+  const out = [];
+  for (const item of arr) {
+    const key = item?.id;
+    if (key === undefined || !seen.has(key)) { if (key !== undefined) seen.add(key); out.push(item); }
+  }
+  return out;
+}
 
 // ─── XP logic ───────────────────────────────────────────────────────────────
 function awardXP(state, amount, reason) {
@@ -161,12 +202,38 @@ function reducer(state, action) {
       if (!was) next = { ...next, xpLog: [{ amount: action.xp, reason: `Task: ${action.title}`, date: today() }, ...(next.xpLog || [])].slice(0, 200) };
       break;
     }
-    case 'diary':
+    case 'diary': {
+      // Diary is stored as { [date]: [entry, entry, ...] } so multiple entries
+      // on the same day stack instead of overwriting each other.
+      const entry = {
+        id: uid(),
+        text: action.text,
+        createdAt: Date.now(),
+        font: action.style?.font || 'handwritten',
+        color: action.style?.color || '#e6edf3',
+        size: action.style?.size || 15,
+        bold: !!action.style?.bold,
+        underline: !!action.style?.underline,
+      };
+      const dayEntries = [...(state.diary?.[action.date] || []), entry];
       next = awardXP(
-        { ...state, diary: { ...state.diary, [action.date]: action.text }, diaryCount: (state.diaryCount || 0) + 1 },
+        { ...state, diary: { ...state.diary, [action.date]: dayEntries }, diaryCount: (state.diaryCount || 0) + 1 },
         XP_RULES.diary_entry, 'Diary entry'
       );
       break;
+    }
+    case 'updateDiaryEntry': {
+      const dayEntries = (state.diary?.[action.date] || []).map(e => e.id === action.entry.id ? { ...e, ...action.entry } : e);
+      next = { ...state, diary: { ...state.diary, [action.date]: dayEntries } };
+      break;
+    }
+    case 'removeDiaryEntry': {
+      const dayEntries = (state.diary?.[action.date] || []).filter(e => e.id !== action.entryId);
+      const diary = { ...state.diary };
+      if (dayEntries.length) diary[action.date] = dayEntries; else delete diary[action.date];
+      next = { ...state, diary };
+      break;
+    }
     case 'calNote': next = { ...state, calNotes: { ...state.calNotes, [action.date]: action.text } }; break;
     case 'focusDone':
       next = awardXP({ ...state, focusSessions: [...state.focusSessions, { date: today(), minutes: action.minutes, mode: action.mode }] }, XP_RULES.focus_session, `Focus – ${action.mode}`);
@@ -302,11 +369,42 @@ function reducer(state, action) {
       next = { ...state, customTasks: (state.customTasks || []).filter(t => t.id !== action.id), checked: checkedRest };
       break;
     }
+    // Built-in tasks (from TASKS in data.js) can't be mutated directly since
+    // they're static import data — instead we store an "override" patch that
+    // gets merged on top of the original at render time.
+    case 'overrideBuiltinTask': {
+      next = { ...state, taskOverrides: { ...(state.taskOverrides || {}), [action.id]: action.patch } };
+      break;
+    }
+    case 'deleteBuiltinTask': {
+      const { [action.id]: _removed, ...checkedRest } = state.checked;
+      next = { ...state, deletedTaskIds: [...(state.deletedTaskIds || []), action.id], checked: checkedRest };
+      break;
+    }
+    case 'restoreBuiltinTask': {
+      next = { ...state, deletedTaskIds: (state.deletedTaskIds || []).filter(id => id !== action.id) };
+      break;
+    }
 
     case '_hydrate': {
       const cloud = action.data;
-      if ((cloud.xp || 0) >= (state.xp || 0)) return cloud;
-      return state;
+      if (!cloud) return state;
+      // Prefer whichever snapshot is more advanced overall (by XP as a proxy
+      // for "more progress"), but always keep arrays/objects merged rather
+      // than fully overwriting, so a stale cloud pull can't silently erase
+      // reminders/diary/units that were added locally without earning XP.
+      const cloudIsNewer = (cloud.xp || 0) >= (state.xp || 0);
+      const base = cloudIsNewer ? cloud : state;
+      const other = cloudIsNewer ? state : cloud;
+      return {
+        ...base,
+        reminders: dedupeById([...(base.reminders || []), ...(other.reminders || [])]),
+        units: dedupeById([...(base.units || []), ...(other.units || [])]),
+        diary: { ...(other.diary || {}), ...(base.diary || {}) },
+        calNotes: { ...(other.calNotes || {}), ...(base.calNotes || {}) },
+        customTasks: dedupeById([...(base.customTasks || []), ...(other.customTasks || [])]),
+        checked: { ...(other.checked || {}), ...(base.checked || {}) },
+      };
     }
 case 'loadState': return { ...action.state, _ts: Date.now() };
     default: return state;
@@ -320,11 +418,17 @@ case 'loadState': return { ...action.state, _ts: Date.now() };
 const AVATAR_EMOJIS = ['🎓','👨‍💻','👩‍💻','🧑‍🔬','🦁','🐉','🚀','⚡','🔥','🌟','💎','🎯','🏆','🦊','🐺','🎮','🤖','👾','🌈','🦋'];
 const ACCENT_COLORS = ['#58a6ff','#3fb950','#bc8cff','#d29922','#f85149','#ff9500','#ff6ac1','#00d4aa','#ff7b72','#ffa198','#56d364','#e8b86d'];
 
-function SettingsTab({ state, dispatch }) {
+function SettingsTab({ state, dispatch, initialSection }) {
   const prefs = state.prefs || DEFAULT_PREFS;
-  const [activeSection, setActiveSection] = useState('profile');
+  const [activeSection, setActiveSection] = useState(initialSection || 'profile');
   const [semForm, setSemForm] = useState({ year: '', sem: '' });
   const [resForm, setResForm] = useState({ category: '', name: '', url: '' });
+
+  // Jump to the requested section whenever it changes (e.g. "Manage in Settings"
+  // from the Units tab navigates here and asks for the Semesters section).
+  useEffect(() => {
+    if (initialSection) setActiveSection(initialSection);
+  }, [initialSection]);
 
   const set = (key, val) => dispatch({ type: 'setPrefs', prefs: { [key]: val } });
   const setMany = (obj) => dispatch({ type: 'setPrefs', prefs: obj });
@@ -879,7 +983,7 @@ function Dashboard({ state }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // SEMESTER UNITS (dynamic years/sems)
 // ══════════════════════════════════════════════════════════════════════════════
-function UnitsTab({ state, dispatch }) {
+function UnitsTab({ state, dispatch, goToSettings }) {
   const prefs = state.prefs || DEFAULT_PREFS;
   const semesters = prefs.semesters || DEFAULT_PREFS.semesters;
 
@@ -935,7 +1039,7 @@ function UnitsTab({ state, dispatch }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <span style={{ color: C.muted, fontSize: 13 }}>{state.units.length} unit{state.units.length !== 1 ? 's' : ''} · {semesters.length} semester{semesters.length !== 1 ? 's' : ''}</span>
         <div style={{ display: 'flex', gap: 8 }}>
-          <Btn outline onClick={() => {}} color={C.muted} style={{ fontSize: 12 }}>Manage in Settings</Btn>
+          <Btn outline onClick={() => goToSettings?.('semesters')} color={C.muted} style={{ fontSize: 12 }}>Manage in Settings</Btn>
           <Btn onClick={openAddModal}>+ Add unit</Btn>
         </div>
       </div>
@@ -1402,12 +1506,12 @@ const send = async () => {
         }),
       });
       
+      const data = await res.json();
+
       if (!res.ok) {
-        throw new Error('Server error handling request');
+        throw new Error(data.error || `Server error (${res.status})`);
       }
 
-      const data = await res.json();
-      
       dispatch({ 
         type: 'aiMessage', 
         msg: { role: 'assistant', content: data.text || 'No response.' } 
@@ -1416,7 +1520,7 @@ const send = async () => {
       console.error("Frontend Error:", error);
       dispatch({ 
         type: 'aiMessage', 
-        msg: { role: 'assistant', content: 'Network error — check connection and try again.' } 
+        msg: { role: 'assistant', content: `⚠️ ${error.message || 'Network error — check connection and try again.'}` } 
       });
     }
     setLoading(false);
@@ -1460,13 +1564,11 @@ const send = async () => {
 // ══════════════════════════════════════════════════════════════════════════════
 // TASKS TAB  (customisable: add / edit / remove per skill category)
 // ══════════════════════════════════════════════════════════════════════════════
-function SkillProgressChart({ skillId, tasks, checked }) {
+function SkillProgressChart({ tasks, checked, color }) {
   const done  = tasks.filter(t => checked[t.id]).length;
   const total = tasks.length;
   if (!total) return null;
   const pct   = Math.round((done / total) * 100);
-  const skill = SKILL_ROADMAPS.find(s => s.id === skillId);
-  const color = skill?.color || C.accent;
   const r = 28; const circ = 2 * Math.PI * r;
   const offset = circ - (pct / 100) * circ;
   return (
@@ -1484,20 +1586,27 @@ function SkillProgressChart({ skillId, tasks, checked }) {
   );
 }
 
-const BLANK_TASK_FORM = { title: '', skillId: '', xp: 20, link: '', week: '' };
+const BLANK_TASK_FORM = { title: '', categoryId: '', xp: 20, link: '', week: '' };
+
+// Every category a task can belong to: built-in TRACKS + the FULL SKILL_ROADMAPS
+// list (roadmap.sh-style), not just the ones the user has "chosen" in Settings.
+// Choosing a skill in Settings only affects which roadmaps surface elsewhere
+// (e.g. Resources tab) — it should never gate which categories tasks can use.
+function buildAllCategories() {
+  const builtIn = TRACKS.map(t => ({ id: t.id, label: t.label, emoji: t.emoji, color: t.color, kind: 'track' }));
+  const skills  = SKILL_ROADMAPS.map(s => ({ id: s.id, label: s.label, emoji: s.emoji, color: s.color, kind: 'skill' }));
+  return [...builtIn, ...skills];
+}
 
 function TasksTab({ state, toggle, dispatch }) {
-  const prefs       = state.prefs || DEFAULT_PREFS;
-  const customTasks = state.customTasks || [];
-  const chosenSkills = prefs.chosenSkills || [];
+  const prefs         = state.prefs || DEFAULT_PREFS;
+  const customTasks   = state.customTasks || [];
+  const taskOverrides = state.taskOverrides || {};
+  const deletedIds    = state.deletedTaskIds || [];
+  const chosenSkills  = prefs.chosenSkills || [];
 
-  // Build the full skill list for filtering:
-  // built-in TRACKS + chosen SKILL_ROADMAPS
-  const builtInCategories = TRACKS.map(t => ({ id: t.id, label: t.label, emoji: t.emoji, color: t.color, isSkill: false }));
-  const skillCategories   = SKILL_ROADMAPS
-    .filter(s => chosenSkills.includes(s.id))
-    .map(s => ({ id: s.id, label: s.label, emoji: s.emoji, color: s.color, isSkill: true }));
-  const allCategories = [...builtInCategories, ...skillCategories];
+  const allCategories = buildAllCategories();
+  const getCategory = (id) => allCategories.find(c => c.id === id);
 
   const [activeTab, setActiveTab]   = useState('all');   // 'all' | category id | 'progress'
   const [showModal, setShowModal]   = useState(false);
@@ -1505,84 +1614,96 @@ function TasksTab({ state, toggle, dispatch }) {
   const [form, setForm]             = useState(BLANK_TASK_FORM);
   const [confirmDel, setConfirmDel] = useState(null);
 
-  // All tasks: built-in (have week/track) + custom (have skillId)
-  const allTasks = [
-    ...TASKS.map(t => ({ ...t, _builtin: true })),
-    ...customTasks.map(t => ({ ...t, _builtin: false })),
-  ];
+  // Built-in tasks with any saved overrides merged in, minus deleted ones.
+  const builtinMerged = TASKS
+    .filter(t => !deletedIds.includes(t.id))
+    .map(t => {
+      const o = taskOverrides[t.id];
+      if (!o) return { ...t, _builtin: true, categoryId: t.track };
+      return { ...t, ...o, _builtin: true, categoryId: o.categoryId || t.track };
+    });
+
+  const customMerged = customTasks.map(t => ({ ...t, _builtin: false, categoryId: t.categoryId || t.skillId || t.track || '' }));
+
+  const allTasks = [...builtinMerged, ...customMerged];
 
   const filteredTasks = activeTab === 'all' || activeTab === 'progress'
     ? allTasks
-    : allTasks.filter(t => (t.track || t.skillId) === activeTab);
+    : allTasks.filter(t => t.categoryId === activeTab);
 
-  // Group by skill/track for display
   function getCatMeta(task) {
-    if (task.track) {
-      const tr = TRACKS.find(t => t.id === task.track);
-      return tr ? { id: tr.id, label: tr.label, emoji: tr.emoji, color: tr.color } : null;
-    }
-    if (task.skillId) {
-      const sk = SKILL_ROADMAPS.find(s => s.id === task.skillId);
-      return sk ? { id: sk.id, label: sk.label, emoji: sk.emoji, color: sk.color } : null;
-    }
-    return null;
+    return getCategory(task.categoryId) || null;
   }
 
-  // Group tasks by week (built-in) or by skillId (custom, no week)
+  // Group tasks: by week first (anything with a week number), then remaining
+  // tasks grouped by category.
   const grouped = [];
   if (activeTab !== 'progress') {
-    // First: week-grouped tasks (built-in or custom with week set)
     const withWeek = filteredTasks.filter(t => t.week);
-    const weeks = [...new Set(withWeek.map(t => t.week))].sort((a,b) => a-b);
+    const weeks = [...new Set(withWeek.map(t => t.week))].sort((a, b) => a - b);
     weeks.forEach(week => {
       const tasks = withWeek.filter(t => t.week === week);
       if (tasks.length) grouped.push({ type: 'week', week, tasks });
     });
-    // Then: custom tasks without a week, grouped by skill
     const noWeek = filteredTasks.filter(t => !t.week);
-    const cats = [...new Set(noWeek.map(t => t.skillId).filter(Boolean))];
-    cats.forEach(skillId => {
-      const sk = SKILL_ROADMAPS.find(s => s.id === skillId);
-      const tasks = noWeek.filter(t => t.skillId === skillId);
-      if (tasks.length) grouped.push({ type: 'skill', skillId, label: `${sk?.emoji || ''} ${sk?.label || skillId}`, color: sk?.color || C.accent, tasks });
+    const cats = [...new Set(noWeek.map(t => t.categoryId).filter(Boolean))];
+    cats.forEach(catId => {
+      const cat = getCategory(catId);
+      const tasks = noWeek.filter(t => t.categoryId === catId);
+      if (tasks.length) grouped.push({ type: 'cat', catId, label: `${cat?.emoji || ''} ${cat?.label || catId}`, color: cat?.color || C.accent, tasks });
     });
-    const orphan = noWeek.filter(t => !t.skillId);
-    if (orphan.length) grouped.push({ type: 'skill', skillId: '_other', label: '📌 Other', color: C.muted, tasks: orphan });
+    const orphan = noWeek.filter(t => !t.categoryId);
+    if (orphan.length) grouped.push({ type: 'cat', catId: '_other', label: '📌 Other', color: C.muted, tasks: orphan });
   }
 
   const openAdd = () => {
     setEditTask(null);
-    setForm({ ...BLANK_TASK_FORM, skillId: activeTab !== 'all' && activeTab !== 'progress' ? activeTab : '' });
+    setForm({ ...BLANK_TASK_FORM, categoryId: activeTab !== 'all' && activeTab !== 'progress' ? activeTab : '' });
     setShowModal(true);
   };
   const openEdit = (task) => {
     setEditTask(task);
-    setForm({ title: task.title, skillId: task.skillId || task.track || '', xp: task.xp, link: task.link || '', week: task.week || '' });
+    setForm({ title: task.title, categoryId: task.categoryId || '', xp: task.xp, link: task.link || '', week: task.week || '' });
     setShowModal(true);
   };
   const saveTask = () => {
     if (!form.title.trim()) return;
     const taskData = {
       title: form.title.trim(),
-      skillId: form.skillId || '',
+      categoryId: form.categoryId || '',
       xp: parseInt(form.xp) || 20,
       link: form.link.trim(),
       week: form.week ? parseInt(form.week) : null,
     };
     if (editTask) {
-      dispatch({ type: 'updateCustomTask', task: { ...editTask, ...taskData } });
+      if (editTask._builtin) {
+        dispatch({ type: 'overrideBuiltinTask', id: editTask.id, patch: taskData });
+      } else {
+        dispatch({ type: 'updateCustomTask', task: { ...editTask, ...taskData } });
+      }
     } else {
       dispatch({ type: 'addCustomTask', task: { id: uid(), ...taskData } });
     }
     setShowModal(false);
   };
   const deleteTask = (task) => {
-    dispatch({ type: 'removeCustomTask', id: task.id });
+    if (task._builtin) {
+      dispatch({ type: 'deleteBuiltinTask', id: task.id });
+    } else {
+      dispatch({ type: 'removeCustomTask', id: task.id });
+    }
     setConfirmDel(null);
   };
 
   const totalDone  = allTasks.filter(t => state.checked[t.id]).length;
   const totalCount = allTasks.length;
+
+  // ── METRICS: split into (1) individual tasks and (2) overall skills learnt ──
+  // 1. Individual task metrics: simple counts of tasks done/total, XP earned —
+  //    granular, per-task tracking.
+  // 2. Overall skills metrics: one ring per skill/category showing % of that
+  //    skill's tasks completed — a roll-up view of mastery per skill.
+  const categoriesWithTasks = allCategories.filter(cat => allTasks.some(t => t.categoryId === cat.id));
 
   return (
     <div>
@@ -1595,7 +1716,7 @@ function TasksTab({ state, toggle, dispatch }) {
         <Btn onClick={openAdd}>+ Add Task</Btn>
       </div>
 
-      {/* ── Category filter tabs ── */}
+      {/* ── Category filter tabs (every roadmap.sh skill + built-in tracks) ── */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 18, flexWrap: 'wrap' }}>
         {[{ id: 'all', label: 'All', emoji: '📋', color: C.accent }, { id: 'progress', label: 'Progress', emoji: '📊', color: C.purple }, ...allCategories].map(cat => (
           <button key={cat.id} onClick={() => setActiveTab(cat.id)} style={{
@@ -1611,15 +1732,16 @@ function TasksTab({ state, toggle, dispatch }) {
       {/* ── PROGRESS VIEW ── */}
       {activeTab === 'progress' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {/* Overall summary card */}
+
+          {/* 1. INDIVIDUAL TASK METRICS */}
           <Card>
-            <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>Overall Progress</div>
+            <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>📋 Individual Task Metrics</div>
+            <div style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>Per-task completion across every category</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 12 }}>
-              {allCategories.map(cat => {
-                const tasks = allTasks.filter(t => (t.track || t.skillId) === cat.id);
+              {categoriesWithTasks.map(cat => {
+                const tasks = allTasks.filter(t => t.categoryId === cat.id);
                 const done  = tasks.filter(t => state.checked[t.id]).length;
-                if (!tasks.length) return null;
-                const pct = Math.round((done / tasks.length) * 100);
+                const pct   = Math.round((done / tasks.length) * 100);
                 return (
                   <div key={cat.id} style={{ background: C.surface2, borderRadius: 10, padding: '12px 14px', borderLeft: `4px solid ${cat.color}` }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
@@ -1629,45 +1751,51 @@ function TasksTab({ state, toggle, dispatch }) {
                     <ProgressBar value={done} max={tasks.length} color={cat.color} height={7} />
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 11, color: C.muted }}>
                       <span>{pct}% complete</span>
-                      <span>+{tasks.filter(t => state.checked[t.id]).reduce((s,t) => s + (t.xp||0), 0)} XP earned</span>
+                      <span>+{tasks.filter(t => state.checked[t.id]).reduce((s, t) => s + (t.xp || 0), 0)} XP earned</span>
                     </div>
                   </div>
                 );
               })}
+              {categoriesWithTasks.length === 0 && <div style={{ color: C.muted, fontSize: 13 }}>No tasks yet — add one to start tracking.</div>}
             </div>
           </Card>
 
-          {/* Skill-by-skill ring charts */}
-          {chosenSkills.length > 0 && (
-            <Card>
-              <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>Skill Roadmap Progress</div>
-              <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
-                {chosenSkills.map(skillId => {
-                  const tasks = allTasks.filter(t => t.skillId === skillId);
-                  const sk    = SKILL_ROADMAPS.find(s => s.id === skillId);
-                  if (!tasks.length) return (
-                    <div key={skillId} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, minWidth: 80, opacity: 0.5 }}>
-                      <div style={{ width: 72, height: 72, borderRadius: '50%', background: C.surface2, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24 }}>{sk?.emoji}</div>
-                      <div style={{ fontSize: 10, color: C.muted, textAlign: 'center' }}>No tasks yet</div>
-                      <div style={{ fontSize: 11, color: C.muted }}>{sk?.label}</div>
-                    </div>
-                  );
-                  return (
-                    <div key={skillId} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-                      <SkillProgressChart skillId={skillId} tasks={tasks} checked={state.checked} />
-                      <div style={{ fontSize: 11, fontWeight: 600, color: sk?.color, maxWidth: 80, textAlign: 'center' }}>{sk?.emoji} {sk?.label}</div>
-                    </div>
-                  );
-                })}
-              </div>
-            </Card>
-          )}
-
-          {/* Weekly built-in progress */}
+          {/* 2. OVERALL SKILLS LEARNT (roll-up per skill, ring charts) */}
           <Card>
-            <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>Built-in Roadmap by Week</div>
-            {[...new Set(TASKS.map(t => t.week))].sort((a,b) => a-b).map(week => {
-              const tasks = TASKS.filter(t => t.week === week);
+            <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>🎯 Overall Skills Learnt</div>
+            <div style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>Mastery progress rolled up per skill roadmap</div>
+            <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+              {SKILL_ROADMAPS.map(sk => {
+                const tasks = allTasks.filter(t => t.categoryId === sk.id);
+                if (!tasks.length) {
+                  // Still show chosen skills with zero tasks as a reminder; skip unchosen+empty ones to avoid clutter
+                  if (!chosenSkills.includes(sk.id)) return null;
+                  return (
+                    <div key={sk.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, minWidth: 80, opacity: 0.5 }}>
+                      <div style={{ width: 72, height: 72, borderRadius: '50%', background: C.surface2, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24 }}>{sk.emoji}</div>
+                      <div style={{ fontSize: 10, color: C.muted, textAlign: 'center' }}>No tasks yet</div>
+                      <div style={{ fontSize: 11, color: C.muted }}>{sk.label}</div>
+                    </div>
+                  );
+                }
+                return (
+                  <div key={sk.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                    <SkillProgressChart tasks={tasks} checked={state.checked} color={sk.color} />
+                    <div style={{ fontSize: 11, fontWeight: 600, color: sk.color, maxWidth: 80, textAlign: 'center' }}>{sk.emoji} {sk.label}</div>
+                  </div>
+                );
+              })}
+            </div>
+            {SKILL_ROADMAPS.every(sk => !allTasks.some(t => t.categoryId === sk.id) && !chosenSkills.includes(sk.id)) && (
+              <div style={{ color: C.muted, fontSize: 13, marginTop: 8 }}>Add tasks to a skill category to see its progress ring here.</div>
+            )}
+          </Card>
+
+          {/* Weekly built-in roadmap progress */}
+          <Card>
+            <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>🗓️ Built-in Roadmap by Week</div>
+            {[...new Set(builtinMerged.filter(t => t.week).map(t => t.week))].sort((a, b) => a - b).map(week => {
+              const tasks = builtinMerged.filter(t => t.week === week);
               const done  = tasks.filter(t => state.checked[t.id]).length;
               const pct   = Math.round((done / tasks.length) * 100);
               return (
@@ -1689,7 +1817,7 @@ function TasksTab({ state, toggle, dispatch }) {
         <Card style={{ textAlign: 'center', padding: 40 }}>
           <div style={{ fontSize: 36, marginBottom: 10 }}>✅</div>
           <div style={{ fontWeight: 600, marginBottom: 6 }}>No tasks here yet</div>
-          <div style={{ color: C.muted, fontSize: 13, marginBottom: 16 }}>Add a task for this skill, or choose skills in Settings → Skills Roadmap.</div>
+          <div style={{ color: C.muted, fontSize: 13, marginBottom: 16 }}>Add a task for this category — any roadmap.sh skill is available, not just the ones you've chosen.</div>
           <Btn onClick={openAdd}>+ Add Task</Btn>
         </Card>
       )}
@@ -1722,18 +1850,15 @@ function TasksTab({ state, toggle, dispatch }) {
                       {cat && <Badge label={`${cat.emoji} ${cat.label}`} color={cat.color} />}
                       <Badge label={`+${task.xp} XP`} color={C.amber} />
                       {!task._builtin && <Badge label="custom" color={C.purple} />}
+                      {task._builtin && taskOverrides[task.id] && <Badge label="edited" color={C.accent} />}
                     </div>
                   </div>
 
-                  {/* Actions */}
+                  {/* Actions — edit/delete now available on EVERY task, built-in or custom */}
                   <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
                     {task.link && <a href={task.link} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} title="Open resource" style={{ color: C.accent, fontSize: 13, padding: '2px 4px', textDecoration: 'none' }}>↗</a>}
-                    {!task._builtin && (
-                      <>
-                        <button onClick={e => { e.stopPropagation(); openEdit(task); }} title="Edit" style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 14, padding: '2px 4px' }}>✏️</button>
-                        <button onClick={e => { e.stopPropagation(); setConfirmDel(task); }} title="Delete" style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 14, padding: '2px 4px' }}>🗑️</button>
-                      </>
-                    )}
+                    <button onClick={e => { e.stopPropagation(); openEdit(task); }} title="Edit" style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 14, padding: '2px 4px' }}>✏️</button>
+                    <button onClick={e => { e.stopPropagation(); setConfirmDel(task); }} title="Delete" style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 14, padding: '2px 4px' }}>🗑️</button>
                   </div>
                 </div>
               );
@@ -1753,21 +1878,17 @@ function TasksTab({ state, toggle, dispatch }) {
 
             <div>
               <SectionLabel>Category / Skill</SectionLabel>
-              <select value={form.skillId} onChange={e => setForm(f => ({ ...f, skillId: e.target.value }))}
+              <select value={form.categoryId} onChange={e => setForm(f => ({ ...f, categoryId: e.target.value }))}
                 style={{ background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: '8px 10px', fontSize: 13, fontFamily: 'inherit', width: '100%' }}>
                 <option value="">— Choose category —</option>
                 <optgroup label="Built-in tracks">
                   {TRACKS.map(t => <option key={t.id} value={t.id}>{t.emoji} {t.label}</option>)}
                 </optgroup>
-                {chosenSkills.length > 0 && (
-                  <optgroup label="My Skill Roadmaps">
-                    {chosenSkills.map(id => {
-                      const sk = SKILL_ROADMAPS.find(s => s.id === id);
-                      return sk ? <option key={id} value={id}>{sk.emoji} {sk.label}</option> : null;
-                    })}
-                  </optgroup>
-                )}
+                <optgroup label="Skill Roadmaps (all roadmap.sh skills)">
+                  {SKILL_ROADMAPS.map(sk => <option key={sk.id} value={sk.id}>{sk.emoji} {sk.label}</option>)}
+                </optgroup>
               </select>
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>Every skill is available here — you don't need to "choose" it in Settings first.</div>
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
@@ -1794,7 +1915,7 @@ function TasksTab({ state, toggle, dispatch }) {
       {/* ── Confirm Delete Modal ── */}
       {confirmDel && (
         <Modal title="Delete Task?" onClose={() => setConfirmDel(null)}>
-          <p style={{ color: C.muted, fontSize: 13, marginBottom: 16 }}>Remove <strong style={{ color: C.text }}>{confirmDel.title}</strong>? This cannot be undone.</p>
+          <p style={{ color: C.muted, fontSize: 13, marginBottom: 16 }}>Remove <strong style={{ color: C.text }}>{confirmDel.title}</strong>? {confirmDel._builtin ? 'This hides it from your roadmap (it can be restored from Settings later).' : 'This cannot be undone.'}</p>
           <div style={{ display: 'flex', gap: 10 }}>
             <Btn color={C.red} onClick={() => deleteTask(confirmDel)}>Delete</Btn>
             <Btn outline onClick={() => setConfirmDel(null)}>Cancel</Btn>
@@ -1939,35 +2060,198 @@ function CalendarTab({ state, dispatch }) {
   );
 }
 
-function DiaryTab({ state, dispatch }) {
-  const [text, setText] = useState('');
-  const entries = Object.entries(state.diary).sort((a, b) => b[0].localeCompare(a[0]));
+// Loads the handwritten/journal Google Fonts once for the diary styling
+// controls. Safe to call repeatedly — it only injects the <link> tag once.
+function useDiaryFonts() {
+  useEffect(() => {
+    if (document.getElementById('diary-fonts-link')) return;
+    const link = document.createElement('link');
+    link.id = 'diary-fonts-link';
+    link.rel = 'stylesheet';
+    link.href = DIARY_GOOGLE_FONTS_URL;
+    document.head.appendChild(link);
+  }, []);
+}
+
+// Small toolbar of style controls (font, color, size, bold, underline) shared
+// between the composer and the edit-in-place entry view.
+function DiaryStyleBar({ style, onChange }) {
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 16 }}>
-      <div>
-        <Card style={{ marginBottom: 14 }}>
-          <div style={{ fontWeight: 600, marginBottom: 10 }}>📝 Today – {today()}</div>
-          <textarea value={text} onChange={e => setText(e.target.value)} placeholder="What did you learn? What challenged you? What are you proud of?"
-            style={{ width: '100%', background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: 12, fontSize: 14, resize: 'vertical', minHeight: 100, fontFamily: 'inherit', boxSizing: 'border-box' }} />
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
-            <span style={{ fontSize: 12, color: C.amber }}>⭐ +5 XP for each entry</span>
-            <Btn onClick={() => { if (text.trim()) { dispatch({ type: 'diary', date: today(), text: text.trim() }); setText(''); } }}>Save Entry</Btn>
-          </div>
-        </Card>
-        {entries.map(([date, txt]) => (
-          <Card key={date} style={{ marginBottom: 10 }}>
-            <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>{date}</div>
-            <p style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap', margin: 0 }}>{txt}</p>
-          </Card>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+      <select value={style.font} onChange={e => onChange({ ...style, font: e.target.value })}
+        style={{ background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: '6px 8px', fontSize: 12, fontFamily: 'inherit' }}>
+        {Object.entries(DIARY_FONTS).map(([key, f]) => <option key={key} value={key}>{f.label}</option>)}
+      </select>
+
+      <div style={{ display: 'flex', gap: 4 }}>
+        {DIARY_COLORS.map(c => (
+          <button key={c} onClick={() => onChange({ ...style, color: c })} title={c}
+            style={{ width: 20, height: 20, borderRadius: '50%', background: c, cursor: 'pointer', border: style.color === c ? '2px solid white' : '1px solid rgba(255,255,255,.3)', padding: 0 }} />
         ))}
       </div>
-      <Card>
-        <div style={{ fontWeight: 600, marginBottom: 10 }}>💡 Quick tip</div>
-        <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.7, margin: 0 }}>Daily reflections build a learning habit. Each entry earns XP and gives you a searchable record of your progress.<br /><br />Try writing at least one thing you learned, one challenge, and one thing to try tomorrow.</p>
-      </Card>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <button onClick={() => onChange({ ...style, size: Math.max(11, style.size - 1) })} style={{ background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 4, width: 22, height: 22, cursor: 'pointer', fontSize: 12 }}>−</button>
+        <span style={{ fontSize: 11, color: C.muted, width: 20, textAlign: 'center' }}>{style.size}</span>
+        <button onClick={() => onChange({ ...style, size: Math.min(28, style.size + 1) })} style={{ background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 4, width: 22, height: 22, cursor: 'pointer', fontSize: 12 }}>+</button>
+      </div>
+
+      <button onClick={() => onChange({ ...style, bold: !style.bold })} title="Bold"
+        style={{ background: style.bold ? C.accent : C.surface2, color: style.bold ? '#000' : C.text, border: `1px solid ${style.bold ? C.accent : C.border}`, borderRadius: 4, width: 26, height: 26, cursor: 'pointer', fontWeight: 700, fontSize: 13 }}>B</button>
+      <button onClick={() => onChange({ ...style, underline: !style.underline })} title="Underline"
+        style={{ background: style.underline ? C.accent : C.surface2, color: style.underline ? '#000' : C.text, border: `1px solid ${style.underline ? C.accent : C.border}`, borderRadius: 4, width: 26, height: 26, cursor: 'pointer', textDecoration: 'underline', fontSize: 13 }}>U</button>
     </div>
   );
 }
+
+const BLANK_DIARY_STYLE = { font: 'handwritten', color: '#e6edf3', size: 16, bold: false, underline: false };
+
+function DiaryEntryCard({ date, entry, onEdit, onDelete }) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(entry.text);
+  const [style, setStyle] = useState({ font: entry.font, color: entry.color, size: entry.size, bold: entry.bold, underline: entry.underline });
+
+  const fontFamily = DIARY_FONTS[entry.font]?.family || DIARY_FONTS.handwritten.family;
+  const time = new Date(entry.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  if (editing) {
+    return (
+      <Card style={{ marginBottom: 10 }}>
+        <DiaryStyleBar style={style} onChange={setStyle} />
+        <textarea value={text} onChange={e => setText(e.target.value)}
+          style={{ width: '100%', background: C.surface2, border: `1px solid ${C.border}`, color: style.color, borderRadius: 6, padding: 12, fontSize: style.size, fontFamily: DIARY_FONTS[style.font]?.family, fontWeight: style.bold ? 700 : 400, textDecoration: style.underline ? 'underline' : 'none', resize: 'vertical', minHeight: 90, boxSizing: 'border-box' }} />
+        <div style={{ display: 'flex', gap: 8, marginTop: 10, justifyContent: 'flex-end' }}>
+          <Btn outline onClick={() => setEditing(false)} color={C.muted}>Cancel</Btn>
+          <Btn onClick={() => { if (text.trim()) { onEdit({ ...entry, text: text.trim(), ...style }); setEditing(false); } }}>Save</Btn>
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card style={{ marginBottom: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
+        <div style={{ fontSize: 11, color: C.muted }}>{date} · {time}</div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button onClick={() => setEditing(true)} title="Edit" style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 13 }}>✏️</button>
+          <button onClick={() => onDelete(entry.id)} title="Delete" style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 13 }}>🗑️</button>
+        </div>
+      </div>
+      <p style={{
+        margin: 0, lineHeight: 1.7, whiteSpace: 'pre-wrap',
+        fontFamily, fontSize: entry.size || 16, color: entry.color || C.text,
+        fontWeight: entry.bold ? 700 : 400, textDecoration: entry.underline ? 'underline' : 'none',
+      }}>{entry.text}</p>
+    </Card>
+  );
+}
+
+function DiaryTab({ state, dispatch }) {
+  useDiaryFonts();
+  const [text, setText] = useState('');
+  const [style, setStyle] = useState(BLANK_DIARY_STYLE);
+  const [view, setView] = useState('write'); // 'write' | 'browse'
+  const [search, setSearch] = useState('');
+  const [dateFilter, setDateFilter] = useState('');
+
+  const diary = state.diary || {};
+  const todayEntries = diary[today()] || [];
+
+  // Flatten every entry across every date into one list for the browse tab.
+  const allEntries = Object.entries(diary)
+    .flatMap(([date, entries]) => entries.map(e => ({ ...e, date })))
+    .sort((a, b) => b.createdAt - a.createdAt);
+
+  const filtered = allEntries.filter(e => {
+    if (dateFilter && e.date !== dateFilter) return false;
+    if (search && !e.text.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  const saveEntry = () => {
+    if (!text.trim()) return;
+    dispatch({ type: 'diary', date: today(), text: text.trim(), style });
+    setText('');
+  };
+  const editEntry = (date, entry) => dispatch({ type: 'updateDiaryEntry', date, entry });
+  const deleteEntry = (date, entryId) => { if (window.confirm('Delete this entry?')) dispatch({ type: 'removeDiaryEntry', date, entryId }); };
+
+  const allDates = Object.keys(diary).sort((a, b) => b.localeCompare(a));
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+        {[['write', '✍️ Write'], ['browse', `📚 Browse (${allEntries.length})`]].map(([id, label]) => (
+          <button key={id} onClick={() => setView(id)} style={{
+            background: view === id ? C.accent : C.surface2, color: view === id ? '#000' : C.text,
+            border: `1px solid ${view === id ? C.accent : C.border}`, borderRadius: 20, padding: '6px 16px',
+            fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+          }}>{label}</button>
+        ))}
+      </div>
+
+      {view === 'write' && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 16 }}>
+          <div>
+            <Card style={{ marginBottom: 14 }}>
+              <div style={{ fontWeight: 600, marginBottom: 10 }}>📝 Today – {today()}</div>
+              <DiaryStyleBar style={style} onChange={setStyle} />
+              <textarea value={text} onChange={e => setText(e.target.value)} placeholder="What did you learn? What challenged you? What are you proud of?"
+                style={{ width: '100%', background: C.surface2, border: `1px solid ${C.border}`, color: style.color, borderRadius: 6, padding: 12, fontSize: style.size, fontFamily: DIARY_FONTS[style.font]?.family, fontWeight: style.bold ? 700 : 400, textDecoration: style.underline ? 'underline' : 'none', resize: 'vertical', minHeight: 100, boxSizing: 'border-box' }} />
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
+                <span style={{ fontSize: 12, color: C.amber }}>⭐ +5 XP for each entry</span>
+                <Btn onClick={saveEntry} disabled={!text.trim()}>Save Entry</Btn>
+              </div>
+            </Card>
+
+            {todayEntries.length > 0 && (
+              <>
+                <div style={{ fontSize: 12, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8 }}>Today's entries ({todayEntries.length})</div>
+                {[...todayEntries].sort((a, b) => b.createdAt - a.createdAt).map(entry => (
+                  <DiaryEntryCard key={entry.id} date={today()} entry={entry}
+                    onEdit={(e) => editEntry(today(), e)} onDelete={(id) => deleteEntry(today(), id)} />
+                ))}
+              </>
+            )}
+          </div>
+          <Card>
+            <div style={{ fontWeight: 600, marginBottom: 10 }}>💡 Quick tip</div>
+            <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.7, margin: 0 }}>Daily reflections build a learning habit. Each entry earns XP and gives you a searchable record of your progress. You can write as many entries per day as you like — they all stack.<br /><br />Try writing at least one thing you learned, one challenge, and one thing to try tomorrow.</p>
+          </Card>
+        </div>
+      )}
+
+      {view === 'browse' && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 240px', gap: 16 }}>
+          <div>
+            {filtered.length === 0 && <Card style={{ textAlign: 'center', padding: 40 }}><div style={{ color: C.muted }}>No entries match.</div></Card>}
+            {filtered.map(entry => (
+              <DiaryEntryCard key={entry.id} date={entry.date} entry={entry}
+                onEdit={(e) => editEntry(entry.date, e)} onDelete={(id) => deleteEntry(entry.date, id)} />
+            ))}
+          </div>
+          <Card>
+            <div style={{ fontWeight: 600, marginBottom: 10 }}>🔍 Filter</div>
+            <Input value={search} onChange={setSearch} placeholder="Search text..." style={{ marginBottom: 10 }} />
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>By date</div>
+            <select value={dateFilter} onChange={e => setDateFilter(e.target.value)}
+              style={{ width: '100%', background: C.surface2, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: '8px 10px', fontSize: 13, fontFamily: 'inherit', marginBottom: 10 }}>
+              <option value="">All dates</option>
+              {allDates.map(d => <option key={d} value={d}>{d} ({diary[d].length})</option>)}
+            </select>
+            {(search || dateFilter) && (
+              <button onClick={() => { setSearch(''); setDateFilter(''); }} style={{ background: 'none', border: 'none', color: C.accent, fontSize: 12, cursor: 'pointer', padding: 0 }}>Clear filters</button>
+            )}
+            <div style={{ marginTop: 16, fontSize: 11, color: C.muted, lineHeight: 1.6 }}>
+              {allEntries.length} total entries across {allDates.length} day{allDates.length !== 1 ? 's' : ''}.
+            </div>
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function RemindersTab({ state, dispatch }) {
   const [form, setForm] = useState({ title: '', date: '', time: '', type: 'study' });
@@ -2071,9 +2355,17 @@ const TABS = [
   { id: 'settings',  label: '⚙️ Settings',          group: 'general' },
 ];
 
-function AppInner({ user }) {
+function AppInner({ user, cloudData }) {
   const [tab, setTab] = useState('dashboard');
+  const [settingsSection, setSettingsSection] = useState('profile');
   const [state, dispatch] = useReducer(reducer, null, initState);
+
+  // Apply any data pulled from the cloud (e.g. signed in on another device)
+  // once it arrives. The reducer only accepts it if it isn't behind local XP,
+  // so a stale snapshot can't clobber newer local progress.
+  useEffect(() => {
+    if (cloudData) dispatch({ type: '_hydrate', data: cloudData });
+  }, [cloudData]);
 
   // PASTE THIS CODE HERE:
   useEffect(() => {
@@ -2162,7 +2454,7 @@ function AppInner({ user }) {
           {tab === 'dashboard'  && <Dashboard state={state} />}
           {tab === 'xplog'      && <XPLogTab state={state} />}
           {tab === 'achieve'    && <AchievementsTab state={state} />}
-          {tab === 'units'      && <UnitsTab state={state} dispatch={dispatch} />}
+          {tab === 'units'      && <UnitsTab state={state} dispatch={dispatch} goToSettings={(section) => { setSettingsSection(section); setTab('settings'); }} />}
           {tab === 'timetable'  && <TimetableTab state={state} dispatch={dispatch} />}
           {tab === 'ai'         && <AITab state={state} dispatch={dispatch} />}
           {tab === 'tasks'      && <TasksTab state={state} toggle={toggle} dispatch={dispatch} />}
@@ -2171,7 +2463,7 @@ function AppInner({ user }) {
           {tab === 'diary'      && <DiaryTab state={state} dispatch={dispatch} />}
           {tab === 'reminders'  && <RemindersTab state={state} dispatch={dispatch} />}
           {tab === 'resources'  && <ResourcesTab prefs={prefs} />}
-          {tab === 'settings'   && <SettingsTab state={state} dispatch={dispatch} />}
+          {tab === 'settings'   && <SettingsTab state={state} dispatch={dispatch} initialSection={settingsSection} />}
         </div>
       </div>
     </div>
@@ -2230,7 +2522,7 @@ export default function App() {
         <span style={{ color: syncColors[syncStatus], fontSize: 11 }}>· {syncLabels[syncStatus]}</span>
         <button onClick={signOut} style={{ background: 'none', border: 'none', color: '#7d8590', fontSize: 11, cursor: 'pointer', marginLeft: 4 }}>Sign out</button>
       </div>
-      <AppInner user={user} />
+      <AppInner user={user} cloudData={cloudData} />
     </div>
   );
 }

@@ -15,9 +15,9 @@ exports.handler = async (event) => {
   }
 
   if (event.httpMethod !== "POST") {
-    return { 
-      statusCode: 405, 
-      body: JSON.stringify({ error: "Method Not Allowed" }) 
+    return {
+      statusCode: 405,
+      body: JSON.stringify({ error: "Method Not Allowed" })
     };
   }
 
@@ -28,7 +28,7 @@ exports.handler = async (event) => {
       return {
         statusCode: 500,
         headers: { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" },
-        body: JSON.stringify({ error: "Missing GROQ_API_KEY environment variable. Make sure your local .env file contains GROQ_API_KEY=gsk_..." })
+        body: JSON.stringify({ error: "Missing GROQ_API_KEY environment variable. Make sure your local .env file contains GROQ_API_KEY=gsk_... (and that it's also set in Netlify Site settings → Environment variables for deployed builds)." })
       };
     }
 
@@ -40,7 +40,13 @@ exports.handler = async (event) => {
       throw new Error("The active Node runtime version environment lacks a native global fetch client module.");
     }
 
-    // 2. Execute external request to upstream Groq endpoints
+    // 2. Execute external request to upstream Groq endpoint
+    // NOTE: llama3-8b-8192 was decommissioned by Groq. Using a currently
+    // supported, fast, free-tier model instead. If this model is later
+    // deprecated too, check https://console.groq.com/docs/models for the
+    // current list and swap the string below.
+    const MODEL = "llama-3.1-8b-instant";
+
     const response = await fetchMethod('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -48,7 +54,7 @@ exports.handler = async (event) => {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: "llama3-8b-8192", 
+        model: MODEL,
         messages: [
           { role: "system", content: systemPrompt },
           ...messages.map(m => ({
@@ -65,7 +71,8 @@ exports.handler = async (event) => {
       return {
         statusCode: response.status,
         headers: { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" },
-        body: JSON.stringify({ error: `Groq Upstream Failure: ${errorText}` })
+        // Surface the real upstream message so deprecations / bad keys are obvious in the UI
+        body: JSON.stringify({ error: `Groq Upstream Failure (${response.status}): ${errorText}` })
       };
     }
 
